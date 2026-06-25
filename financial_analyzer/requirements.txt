@@ -1,0 +1,10 @@
+akshare
+akshare-proxy-patch==0.5.0
+pandas
+numpy
+requests
+pydantic
+python-dotenv
+markdown
+openai
+pytest
