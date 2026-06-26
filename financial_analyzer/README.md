@@ -1,4 +1,4 @@
-# Financial Analyzer 0.2.1
+# Financial Analyzer 0.2.2
 
 A 股单股财务分析工作流系统。输入股票代码、分析日期和分析目标后，系统抓取 AKShare 数据、清洗财报、计算指标、生成风险红旗和评分，并输出 Markdown 简报。
 

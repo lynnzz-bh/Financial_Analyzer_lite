@@ -250,3 +250,27 @@ def test_factor_score_and_risk_rules() -> None:
     score = score_financials(factors)
     assert 0 <= score["total_score"] <= 100
     assert score["score_confidence"] in {"high", "medium", "low"}
+
+
+def test_yoy_uses_same_report_period_last_year() -> None:
+    reports = {
+        "income_statement": [
+            {"report_period": "2024Q1", "营业收入": 100, "营业成本": 70, "归母净利润": 10, "扣非归母净利润": 9},
+            {"report_period": "2024Q3", "营业收入": 900, "营业成本": 700, "归母净利润": 90, "扣非归母净利润": 80},
+            {"report_period": "2025Q3", "营业收入": 2000, "营业成本": 1500, "归母净利润": 200, "扣非归母净利润": 190},
+            {"report_period": "2025Q1", "营业收入": 120, "营业成本": 80, "归母净利润": 15, "扣非归母净利润": 12},
+        ],
+        "balance_sheet": [
+            {"report_period": "2024Q1", "合同负债": 50, "在建工程": 10, "应收账款": 20, "存货": 30},
+            {"report_period": "2024Q3", "合同负债": 500, "在建工程": 100, "应收账款": 200, "存货": 300},
+            {"report_period": "2025Q3", "合同负债": 2000, "在建工程": 1000, "应收账款": 800, "存货": 900},
+            {"report_period": "2025Q1", "合同负债": 75, "在建工程": 20, "应收账款": 30, "存货": 45},
+        ],
+        "cash_flow": [],
+    }
+    factors = compute_financial_factors(reports, {"PE TTM": 20})
+    assert factors["营收同比"] == pytest.approx(0.2)
+    assert factors["归母净利润同比"] == pytest.approx(0.5)
+    assert factors["扣非归母净利润同比"] == pytest.approx(1 / 3)
+    assert factors["合同负债同比"] == pytest.approx(0.5)
+    assert factors["在建工程同比"] == pytest.approx(1.0)

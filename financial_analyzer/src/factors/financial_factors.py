@@ -1,6 +1,8 @@
 """本模块负责基于清洗后的三张财务报表和市场数据计算财务指标。所有比率、同比和估值指标均由 Python 完成，并处理缺失值与除零。"""
 
 from typing import Any
+import re
+
 import pandas as pd
 
 
@@ -83,10 +85,26 @@ def _gross_profit(row: dict[str, Any]) -> float | None:
 def _yoy(rows: list[dict[str, Any]], field: str) -> float | None:
     if len(rows) < 2:
         return None
-    latest, base = _to_float(rows[-1].get(field)), _to_float(rows[-2].get(field))
+    latest_row = rows[-1]
+    base_row = _same_period_last_year(rows, latest_row)
+    if base_row is None:
+        return None
+    latest, base = _to_float(latest_row.get(field)), _to_float(base_row.get(field))
     if latest is None or base in (None, 0):
         return None
     return latest / base - 1
+
+
+def _same_period_last_year(rows: list[dict[str, Any]], latest_row: dict[str, Any]) -> dict[str, Any] | None:
+    period = latest_row.get("report_period")
+    match = re.fullmatch(r"(\d{4})(Q1|H1|Q3|A)", str(period or ""))
+    if not match:
+        return None
+    target_period = f"{int(match.group(1)) - 1}{match.group(2)}"
+    for row in reversed(rows[:-1]):
+        if row.get("report_period") == target_period:
+            return row
+    return None
 
 
 def _rolling_sum(rows: list[dict[str, Any]], field: str, window: int) -> float | None:
