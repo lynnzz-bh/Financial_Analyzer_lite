@@ -1,4 +1,4 @@
-# Financial Analyzer 0.0.0
+# Financial Analyzer 0.1.0
 
 A 股单股财务分析工作流系统。输入股票代码、分析日期和分析目标后，系统抓取 AKShare 数据、清洗财报、计算指标、生成风险红旗和评分，并输出 Markdown 简报。
 
@@ -29,6 +29,11 @@ python main.py --code 600519 --date 2026-06-24 --mode "买入前检查"
 - `data/raw/`：原始抓取数据。
 - `data/processed/`：清洗数据、指标、评分、风险红旗和 LLM 中间结果。
 - `data/output/`：最终 Markdown 简报。
+
+## 数据源补充
+
+- `src/data_fetcher/astock_data_provider.py` 已加入 a-stock-data 补充数据源封装，来源：[simonlin1212/a-stock-data](https://github.com/simonlin1212/a-stock-data)。
+- 当前补充数据源仅作为独立可调用模块存在，尚未接入主分析流程、评分、报告或 LLM prompt。
 
 ## 原则
 

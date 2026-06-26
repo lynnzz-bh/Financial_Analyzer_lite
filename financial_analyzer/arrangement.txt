@@ -1,4 +1,4 @@
-Financial Analyzer 0.0.0 项目说明
+Financial Analyzer 0.1.0 项目说明
 
 一、整体工作流程
 用户通过 main.py 输入股票代码、分析日期和分析目标。系统读取 .env 配置，确认东方财富网相关 AKShare 接口是否具备补丁 token；随后抓取公司基础信息、市场行情、三张财务报表和巨潮公告。原始数据保存到 data/raw。
@@ -27,6 +27,7 @@ src/utils/akshare_patch.py：封装 akshare-proxy-patch，确保东方财富网�
 src/data_fetcher/akshare_fetcher.py：抓取公司基础信息和三张财务报表。
 src/data_fetcher/market_fetcher.py：抓取行情、估值和近 20/60 日涨跌幅。
 src/data_fetcher/announcement_fetcher.py：抓取巨潮公告标题、日期、链接和公告类型。
+src/data_fetcher/astock_data_provider.py：封装 a-stock-data 补充数据源，提供腾讯行情、东方财富板块/行业/资金流等独立抓取函数，暂不接入主流程。
 src/data_cleaner/financial_cleaner.py：统一字段名、金额单位、报告期和披露日期。
 src/factors/financial_factors.py：计算财务指标，处理缺失值和除零问题。
 src/factors/risk_flags.py：按可复现规则生成风险红旗。
@@ -39,4 +40,4 @@ src/report/report_generator.py：生成 Markdown 简报。
 tests/test_basic_pipeline.py：覆盖日期、单位转换、指标、风险和评分等基础逻辑。
 
 三、数据与风控原则
-本项目优先使用官方或准官方数据源。公告以巨潮资讯等官方披露为主，新闻和研报不作为 0.0.0 默认数据源。所有数据必须遵守分析日期原则。LLM 只解释和审核，不生成财务指标、不决定评分。
+本项目优先使用官方或准官方数据源。公告以巨潮资讯等官方披露为主，新闻和研报不作为 0.1.0 默认数据源。所有数据必须遵守分析日期原则。LLM 只解释和审核，不生成财务指标、不决定评分。

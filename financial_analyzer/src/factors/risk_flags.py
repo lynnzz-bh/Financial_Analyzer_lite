@@ -23,7 +23,7 @@ def generate_risk_flags(factors: dict[str, Any], cleaned_reports: dict[str, list
     if _last_two_gross_margin_decline(income_rows):
         flags.append(_flag("盈利能力下滑", "medium", "毛利率连续两个报告期下滑", "产品或成本端压力可能上升。"))
     if _gt(factors.get("资产负债率"), 0.7):
-        flags.append(_flag("杠杆偏高", "medium", "资产负债率高于默认阈值 70%", "行业阈值 0.0.0 使用默认配置。"))
+        flags.append(_flag("杠杆偏高", "medium", "资产负债率高于默认阈值 70%", "行业阈值 0.1.0 使用默认配置。"))
     if _negative_cash_positive_profit(cash_rows, income_rows):
         flags.append(_flag("利润质量异常", "high", "经营现金流为负但净利润为正", "利润未同步转化为经营现金流。"))
     hits = _risk_announcements(announcements)
