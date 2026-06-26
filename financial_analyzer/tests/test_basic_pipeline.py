@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 from src.anti_dependency import anti_dependency_mode
 from src.data_cleaner.financial_cleaner import normalize_financial_dataframe, normalize_money_to_yuan
+from src.data_fetcher import akshare_fetcher
 from src.data_fetcher.akshare_fetcher import to_eastmoney_symbol
 from src.data_fetcher.astock_data_provider import (
     market_prefix,
@@ -65,6 +66,42 @@ def test_astock_tencent_payload_parser() -> None:
     assert quote["最新价"] == 1700.0
     assert quote["PE TTM"] == 25.6
     assert quote["PB"] == 8.8
+
+
+def test_push2_stock_info_parser(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "data": {
+                    "f57": "600519",
+                    "f58": "贵州茅台",
+                    "f84": 1256197800,
+                    "f85": 1256197800,
+                    "f116": 1500000000000,
+                    "f117": 1500000000000,
+                    "f127": "白酒",
+                    "f189": 20010827,
+                    "f43": 1182.18,
+                }
+            }
+
+    def fake_get(url: str, params: dict, timeout: int) -> FakeResponse:
+        captured["url"] = url
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(akshare_fetcher.requests, "get", fake_get)
+    info = akshare_fetcher._fetch_stock_info_from_push2("600519")
+    assert captured["params"]["secid"] == "1.600519"
+    assert info["股票代码"] == "600519"
+    assert info["股票简称"] == "贵州茅台"
+    assert info["行业"] == "白酒"
 
 
 def test_astock_fund_flow_parser() -> None:

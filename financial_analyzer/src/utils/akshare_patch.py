@@ -39,10 +39,16 @@ def ensure_akshare_patch(required: bool) -> bool:
 
 def _call_install_patch(install_patch: Any, settings: Any) -> None:
     kwargs = {
-        "gateway": settings.gateway,
-        "token": settings.token,
+        "auth_ip": settings.gateway,
+        "auth_token": settings.token,
         "retry": settings.retry,
-        "hook_domains": ["em", "eastmoney"],
+        "hook_domains": [
+            "fund.eastmoney.com",
+            "push2.eastmoney.com",
+            "push2his.eastmoney.com",
+            "emweb.securities.eastmoney.com",
+            "datacenter-web.eastmoney.com",
+        ],
         "fast": settings.fast,
     }
     try:

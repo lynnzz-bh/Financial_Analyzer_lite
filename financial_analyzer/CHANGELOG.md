@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- 修复东方财富基础信息接口解析问题，避免 `stock_individual_info_em` 因返回字段变化导致空数据。
+- 调整 akshare-proxy-patch 初始化参数，显式使用代理补丁支持的 `auth_ip` / `auth_token` 配置。
+
 ## 0.2.0
 
 - 新增 Anti-dependency Mode 人机摩擦层：先展示原始财务数据，要求用户提交人工判断后，才解锁 Qwen 对比复盘。
