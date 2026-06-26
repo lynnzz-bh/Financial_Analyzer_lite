@@ -40,8 +40,20 @@ def fetch_stock_info(code: str) -> dict[str, Any]:
 
 def fetch_financial_reports(code: str) -> dict[str, pd.DataFrame]:
     ak = _akshare_with_eastmoney_patch()
+    symbol = to_eastmoney_symbol(code)
     return {
-        "income_statement": _safe_dataframe_call(ak.stock_profit_sheet_by_report_em, symbol=code),
-        "balance_sheet": _safe_dataframe_call(ak.stock_balance_sheet_by_report_em, symbol=code),
-        "cash_flow": _safe_dataframe_call(ak.stock_cash_flow_sheet_by_report_em, symbol=code),
+        "income_statement": _safe_dataframe_call(ak.stock_profit_sheet_by_report_em, symbol=symbol),
+        "balance_sheet": _safe_dataframe_call(ak.stock_balance_sheet_by_report_em, symbol=symbol),
+        "cash_flow": _safe_dataframe_call(ak.stock_cash_flow_sheet_by_report_em, symbol=symbol),
     }
+
+
+def to_eastmoney_symbol(code: str) -> str:
+    clean_code = str(code).strip()
+    if clean_code.startswith(("6", "9")):
+        return f"SH{clean_code}"
+    if clean_code.startswith(("0", "2", "3")):
+        return f"SZ{clean_code}"
+    if clean_code.startswith(("4", "8")):
+        return f"BJ{clean_code}"
+    return clean_code

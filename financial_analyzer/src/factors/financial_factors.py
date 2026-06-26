@@ -102,11 +102,17 @@ def _free_cash_flow(row: dict[str, Any]) -> float | None:
 
 
 def _short_debt(row: dict[str, Any]) -> float | None:
-    return (_to_float(row.get("短期借款")) or 0) + (_to_float(row.get("一年内到期非流动负债")) or 0)
+    values = [_to_float(row.get("短期借款")), _to_float(row.get("一年内到期非流动负债"))]
+    if all(value is None for value in values):
+        return None
+    return sum(value or 0 for value in values)
 
 
 def _interest_bearing_debt(row: dict[str, Any]) -> float | None:
-    return _short_debt(row) + (_to_float(row.get("长期借款")) or 0)
+    short_debt, long_debt = _short_debt(row), _to_float(row.get("长期借款"))
+    if short_debt is None and long_debt is None:
+        return None
+    return (short_debt or 0) + (long_debt or 0)
 
 
 def _pct_to_number(value: float | None) -> float | None:

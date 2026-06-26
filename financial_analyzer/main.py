@@ -5,6 +5,7 @@ import argparse
 import sys
 import pandas as pd
 from config.settings import PROCESSED_DIR, PROJECT_VERSION, RAW_DIR
+from src.anti_dependency.anti_dependency_mode import run_anti_dependency_mode
 from src.data_cleaner.financial_cleaner import clean_financial_reports
 from src.data_fetcher.akshare_fetcher import fetch_financial_reports, fetch_stock_info
 from src.data_fetcher.announcement_fetcher import fetch_announcements
@@ -15,6 +16,7 @@ from src.llm.llm_pipeline import run_llm_pipeline
 from src.report.report_generator import generate_markdown_report
 from src.scoring.financial_score import score_financials
 from src.utils.akshare_patch import AksharePatchRequiredError
+from src.utils.data_quality import inspect_cleaned_reports_quality, inspect_raw_fetch_quality
 from src.utils.date_utils import parse_analysis_date, validate_stock_code
 from src.utils.logger import get_logger
 from src.utils.storage import save_dataframe, save_json
@@ -27,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--code", required=True, help="6 位 A 股股票代码，例如 600519")
     parser.add_argument("--date", required=True, help="分析日期，格式 YYYY-MM-DD")
     parser.add_argument("--mode", required=True, help="分析目标，例如 买入前检查")
+    parser.add_argument("--anti-dependency", action="store_true", help="启用 Anti-dependency Mode：先人工判断，再解锁 Qwen 对比复盘")
     return parser.parse_args()
 
 
@@ -44,13 +47,35 @@ def main() -> int:
         market_data = fetch_market_data(code, analysis_date)
         reports = fetch_financial_reports(code)
         announcements = fetch_announcements(code, analysis_date)
+        data_quality_warnings = inspect_raw_fetch_quality(stock_info, market_data, reports)
+        for warning in data_quality_warnings:
+            logger.warning("数据质量警告：%s | %s | %s", warning["stage"], warning["source"], warning["message"])
         save_json(stock_info, RAW_DIR / f"{code}_stock_info.json")
         save_json(market_data, RAW_DIR / f"{code}_market_data.json")
         save_json(announcements, RAW_DIR / f"{code}_announcements.json")
         for report_name, df in reports.items():
             if isinstance(df, pd.DataFrame):
                 save_dataframe(df, RAW_DIR / f"{code}_{report_name}.csv")
+        if args.anti_dependency:
+            save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
+            record = run_anti_dependency_mode(
+                code=code,
+                mode=args.mode,
+                analysis_date=analysis_date,
+                stock_info=stock_info,
+                market_data=market_data,
+                reports=reports,
+                announcements=announcements,
+                data_quality_warnings=data_quality_warnings,
+            )
+            logger.info("Anti-dependency 记录已生成：%s", PROCESSED_DIR / f"{code}_anti_dependency_record.json")
+            logger.info("Anti-dependency 复盘已生成：%s", record.get("output_path"))
+            return 0
         cleaned_reports = clean_financial_reports(reports, analysis_date)
+        data_quality_warnings.extend(inspect_cleaned_reports_quality(cleaned_reports))
+        for warning in data_quality_warnings:
+            if warning["stage"] == "cleaned_data":
+                logger.warning("数据质量警告：%s | %s | %s", warning["stage"], warning["source"], warning["message"])
         factors = compute_financial_factors(cleaned_reports, market_data)
         risk_flags = generate_risk_flags(factors, cleaned_reports, announcements)
         financial_score = score_financials(factors)
@@ -58,6 +83,7 @@ def main() -> int:
         save_json(factors, PROCESSED_DIR / f"{code}_financial_factors.json")
         save_json(risk_flags, PROCESSED_DIR / f"{code}_risk_flags.json")
         save_json(financial_score, PROCESSED_DIR / f"{code}_financial_score.json")
+        save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
         context = {
             "code": code,
             "mode": args.mode,
@@ -69,6 +95,7 @@ def main() -> int:
             "risk_flags": risk_flags,
             "financial_score": financial_score,
             "announcements": announcements,
+            "data_quality_warnings": data_quality_warnings,
         }
         context["llm_results"] = run_llm_pipeline(context)
         save_json(context["llm_results"], PROCESSED_DIR / f"{code}_llm_results.json")

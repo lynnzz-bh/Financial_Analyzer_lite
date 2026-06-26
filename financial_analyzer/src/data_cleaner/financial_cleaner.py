@@ -1,4 +1,4 @@
-"""本模块负责清洗 AKShare 财务报表，将字段名、报告期、披露日期和金额单位统一。所有金额统一转为万元，缺失值保留为空。"""
+"""本模块负责清洗 AKShare 财务报表，将字段名、报告期、披露日期和金额单位统一。所有金额统一转为元，缺失值保留为空。"""
 
 from datetime import date
 from typing import Any
@@ -56,7 +56,7 @@ def normalize_financial_dataframe(df: pd.DataFrame, analysis_date: date) -> pd.D
     result = pd.DataFrame()
     for target, aliases in FIELD_ALIASES.items():
         source = _find_column(df, aliases)
-        result[target] = df[source].map(normalize_money_to_wan) if source else None
+        result[target] = df[source].map(normalize_money_to_yuan) if source else None
     report_col = _find_column(df, DATE_ALIASES["report_period"])
     publish_col = _find_column(df, DATE_ALIASES["publish_date"])
     result["report_period"] = df[report_col].map(normalize_report_period) if report_col else None
@@ -67,7 +67,7 @@ def normalize_financial_dataframe(df: pd.DataFrame, analysis_date: date) -> pd.D
     return result.tail(20).reset_index(drop=True)
 
 
-def normalize_money_to_wan(value: Any, source_unit: str | None = None) -> float | None:
+def normalize_money_to_yuan(value: Any, source_unit: str | None = None) -> float | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -100,10 +100,10 @@ def _detect_unit(text: str) -> str:
 
 def _convert_amount(number: float, source_unit: str) -> float:
     if source_unit == "亿元":
-        return number * 10000
+        return number * 100000000
     if source_unit == "万元":
-        return number
-    return number / 10000
+        return number * 10000
+    return number
 
 
 def _find_column(df: pd.DataFrame, aliases: list[str]) -> str | None:

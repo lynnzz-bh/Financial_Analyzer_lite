@@ -15,12 +15,19 @@ def run_llm_pipeline(context: dict[str, Any]) -> dict[str, dict[str, str]]:
         financial_factors=_to_json(context.get("financial_factors", {})),
         financial_score=_to_json(context.get("financial_score", {})),
         risk_flags=_to_json(context.get("risk_flags", [])),
+        data_quality_warnings=_to_json(context.get("data_quality_warnings", [])),
         announcement_summary=announcement_summary,
         market_data=_to_json(context.get("market_data", {})),
     )
     deepseek_result = call_deepseek(deepseek_prompt)
     qwen_prompt = QWEN_AUDIT_PROMPT.format(
-        raw_data_summary=_to_json({"stock_info": context.get("stock_info", {}), "financial_factors": context.get("financial_factors", {}), "financial_score": context.get("financial_score", {})}),
+        raw_data_summary=_to_json({
+            "stock_info": context.get("stock_info", {}),
+            "market_data": context.get("market_data", {}),
+            "financial_factors": context.get("financial_factors", {}),
+            "financial_score": context.get("financial_score", {}),
+            "data_quality_warnings": context.get("data_quality_warnings", []),
+        }),
         deepseek_report=deepseek_result["content"],
         risk_flags=_to_json(context.get("risk_flags", [])),
         announcement_summary=announcement_summary,

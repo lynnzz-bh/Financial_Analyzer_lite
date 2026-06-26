@@ -1,9 +1,12 @@
-"""本模块覆盖项目最基础的纯 Python 逻辑，包括日期校验、万元换算、指标计算、风险红旗和评分可信度，避免依赖外部接口。"""
+"""本模块覆盖项目最基础的纯 Python 逻辑，包括日期校验、元单位换算、指标计算、风险红旗和评分可信度，避免依赖外部接口。"""
 
 from datetime import date
+import json
 import pandas as pd
 import pytest
-from src.data_cleaner.financial_cleaner import normalize_financial_dataframe, normalize_money_to_wan
+from src.anti_dependency import anti_dependency_mode
+from src.data_cleaner.financial_cleaner import normalize_financial_dataframe, normalize_money_to_yuan
+from src.data_fetcher.akshare_fetcher import to_eastmoney_symbol
 from src.data_fetcher.astock_data_provider import (
     market_prefix,
     normalize_stock_code,
@@ -11,8 +14,10 @@ from src.data_fetcher.astock_data_provider import (
     parse_tencent_quote_payload,
 )
 from src.factors.financial_factors import compute_financial_factors
+from src.llm import llm_pipeline
 from src.factors.risk_flags import generate_risk_flags
 from src.scoring.financial_score import score_financials
+from src.utils.data_quality import inspect_cleaned_reports_quality, inspect_raw_fetch_quality
 from src.utils.date_utils import parse_analysis_date, validate_stock_code
 
 
@@ -23,6 +28,9 @@ def test_date_and_code_validation() -> None:
     assert normalize_stock_code("000001.SZ") == "000001"
     assert market_prefix("600519") == "sh"
     assert market_prefix("000001") == "sz"
+    assert to_eastmoney_symbol("600519") == "SH600519"
+    assert to_eastmoney_symbol("000001") == "SZ000001"
+    assert to_eastmoney_symbol("830799") == "BJ830799"
     with pytest.raises(ValueError):
         validate_stock_code("abc")
     with pytest.raises(ValueError):
@@ -70,11 +78,11 @@ def test_astock_fund_flow_parser() -> None:
     assert rows[1]["main_net"] is None
 
 
-def test_money_normalized_to_wan() -> None:
-    assert normalize_money_to_wan("1亿元") == 10000
-    assert normalize_money_to_wan("300万元") == 300
-    assert normalize_money_to_wan(10000) == 1
-    assert normalize_money_to_wan("-") is None
+def test_money_normalized_to_yuan() -> None:
+    assert normalize_money_to_yuan("1亿元") == 100000000
+    assert normalize_money_to_yuan("300万元") == 3000000
+    assert normalize_money_to_yuan(10000) == 10000
+    assert normalize_money_to_yuan("-") is None
 
 
 def test_cleaner_filters_future_publish_date() -> None:
@@ -84,7 +92,102 @@ def test_cleaner_filters_future_publish_date() -> None:
     ])
     cleaned = normalize_financial_dataframe(df, date(2026, 6, 24))
     assert len(cleaned) == 1
-    assert cleaned.iloc[0]["营业收入"] == 1
+    assert cleaned.iloc[0]["营业收入"] == 10000
+
+
+def test_data_quality_warnings_for_empty_fetches() -> None:
+    raw_warnings = inspect_raw_fetch_quality(
+        {"股票代码": "600519", "error": "stock_individual_info_em 返回空数据"},
+        {"股票代码": "600519"},
+        {
+            "income_statement": pd.DataFrame(),
+            "balance_sheet": pd.DataFrame(),
+            "cash_flow": pd.DataFrame(),
+        },
+    )
+    assert any(item["source"] == "stock_info" for item in raw_warnings)
+    assert any(item["source"] == "income_statement" for item in raw_warnings)
+    assert any(item["source"] == "market_data" for item in raw_warnings)
+
+    cleaned_warnings = inspect_cleaned_reports_quality({
+        "income_statement": [],
+        "balance_sheet": [],
+        "cash_flow": [],
+    })
+    assert len(cleaned_warnings) == 3
+
+
+def test_qwen_audit_receives_market_data_and_quality_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def fake_deepseek(prompt: str) -> dict[str, str]:
+        return {"status": "ok", "content": "deepseek report"}
+
+    def fake_qwen(prompt: str) -> dict[str, str]:
+        captured["prompt"] = prompt
+        return {"status": "ok", "content": "qwen audit"}
+
+    monkeypatch.setattr(llm_pipeline, "call_deepseek", fake_deepseek)
+    monkeypatch.setattr(llm_pipeline, "call_qwen", fake_qwen)
+    result = llm_pipeline.run_llm_pipeline({
+        "stock_info": {"股票代码": "600519"},
+        "market_data": {"股票简称": "贵州茅台", "总市值": 100000000},
+        "financial_factors": {"PE TTM": 20},
+        "financial_score": {"total_score": 60},
+        "risk_flags": [],
+        "announcements": [],
+        "data_quality_warnings": [{"level": "warning", "stage": "raw_fetch", "source": "stock_info", "message": "空数据"}],
+    })
+    assert result["qwen"]["status"] == "ok"
+    assert "market_data" in captured["prompt"]
+    assert "贵州茅台" in captured["prompt"]
+    assert "data_quality_warnings" in captured["prompt"]
+
+
+def test_anti_dependency_mode_records_human_judgment_before_qwen(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def fake_qwen(prompt: str) -> dict[str, str]:
+        captured["prompt"] = prompt
+        return {"status": "ok", "content": "漏判：现金流风险；误判：无；过度判断：估值确定性过高"}
+
+    inputs = iter(["我认为收入增长不错，但需要看现金流。", "END"])
+    outputs: list[str] = []
+    monkeypatch.setattr(anti_dependency_mode, "call_qwen", fake_qwen)
+    monkeypatch.setattr(anti_dependency_mode, "PROCESSED_DIR", tmp_path)
+    monkeypatch.setattr(anti_dependency_mode, "OUTPUT_DIR", tmp_path)
+    record = anti_dependency_mode.run_anti_dependency_mode(
+        code="600519",
+        mode="买入前检查",
+        analysis_date=date(2026, 6, 24),
+        stock_info={"股票代码": "600519", "股票简称": "贵州茅台"},
+        market_data={"股票代码": "600519", "股票简称": "贵州茅台", "总市值": 1000, "PE TTM": 20},
+        reports={
+            "income_statement": pd.DataFrame([
+                {"REPORT_DATE": "2025-12-31", "NOTICE_DATE": "2026-04-01", "TOTAL_OPERATE_INCOME": 100, "PARENT_NETPROFIT": 10},
+                {"REPORT_DATE": "2026-03-31", "NOTICE_DATE": "2026-04-25", "TOTAL_OPERATE_INCOME": 120, "PARENT_NETPROFIT": 12},
+            ]),
+            "balance_sheet": pd.DataFrame([
+                {"REPORT_DATE": "2026-03-31", "NOTICE_DATE": "2026-04-25", "TOTAL_ASSETS": 300, "TOTAL_LIABILITIES": 100, "PARENT_EQUITY": 200},
+            ]),
+            "cash_flow": pd.DataFrame([
+                {"REPORT_DATE": "2026-03-31", "NOTICE_DATE": "2026-04-25", "NETCASH_OPERATE": 8},
+            ]),
+        },
+        announcements=[],
+        data_quality_warnings=[],
+        input_func=lambda prompt: next(inputs),
+        output_func=outputs.append,
+    )
+    assert record["human_judgment"] == "我认为收入增长不错，但需要看现金流。"
+    assert record["qwen_comparison"]["status"] == "ok"
+    assert "用户人工判断" in captured["prompt"]
+    assert "我认为收入增长不错" in captured["prompt"]
+    record_path = tmp_path / "600519_anti_dependency_record.json"
+    assert record_path.exists()
+    assert (tmp_path / "600519_2026-06-24_anti_dependency_review.md").exists()
+    saved_record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert saved_record["output_path"].endswith("600519_2026-06-24_anti_dependency_review.md")
 
 
 def test_factor_score_and_risk_rules() -> None:

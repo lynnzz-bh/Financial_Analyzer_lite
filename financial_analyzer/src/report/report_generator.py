@@ -22,6 +22,7 @@ def _build_report(context: dict[str, Any], code: str, name: str, rating: str) ->
     llm = context.get("llm_results", {})
     lines = [
         f"# {code} {name} 财务分析简报", "", f"版本：{PROJECT_VERSION}", f"分析日期：{context.get('analysis_date')}", f"分析目标：{context.get('mode')}", f"数据可信度：{score.get('score_confidence', 'unknown')}", f"综合评分：{score.get('total_score', 'missing')}/100", f"财务评级：{rating}",
+        "", "## 数据质量警告", "", _data_quality_lines(context.get("data_quality_warnings", [])),
         "", "## 一、核心结论", "", llm.get("deepseek", {}).get("content", "LLM 分析不可用。"),
         "", "## 二、财务评分", "", "| 维度 | 分数 | 解释 |", "| --- | ---: | --- |",
         f"| 盈利能力 | {score.get('profitability_score', 0)}/20 | Python 规则评分 |",
@@ -56,6 +57,12 @@ def _risk_lines(risks: list[dict[str, Any]]) -> str:
     if not risks:
         return "未触发风险红旗。"
     return "\n".join(f"- {item['risk_level']} | {item['flag_name']}：{item['evidence']}。{item['explanation']}" for item in risks)
+
+
+def _data_quality_lines(warnings: list[dict[str, Any]]) -> str:
+    if not warnings:
+        return "未发现数据质量警告。"
+    return "\n".join(f"- {item.get('level', 'warning')} | {item.get('stage')} | {item.get('source')}：{item.get('message')}" for item in warnings)
 
 
 def _fmt(value: Any) -> str:

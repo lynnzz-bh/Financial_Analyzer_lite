@@ -1,4 +1,4 @@
-# Financial Analyzer 0.1.0
+# Financial Analyzer 0.2.0
 
 A 股单股财务分析工作流系统。输入股票代码、分析日期和分析目标后，系统抓取 AKShare 数据、清洗财报、计算指标、生成风险红旗和评分，并输出 Markdown 简报。
 
@@ -24,6 +24,14 @@ pip install -r requirements.txt
 python main.py --code 600519 --date 2026-06-24 --mode "买入前检查"
 ```
 
+Anti-dependency Mode 会先展示原始财务数据摘要，要求用户提交人工判断后，才解锁系统评分和 Qwen 对比复盘：
+
+```bash
+python main.py --code 600519 --date 2026-06-24 --mode "买入前检查" --anti-dependency
+```
+
+输入人工判断时可多行输入，单独输入 `END` 提交。
+
 输出位置：
 
 - `data/raw/`：原始抓取数据。
@@ -38,7 +46,7 @@ python main.py --code 600519 --date 2026-06-24 --mode "买入前检查"
 ## 原则
 
 - LLM 不参与原始财务计算，只负责解释、摘要和审核。
-- 金额字段在清洗阶段统一标准化为“万元”。
+- 金额字段在清洗阶段统一标准化为“元”，与 AKShare 行情市值字段保持一致。
 - 缺失数据保留为 `None` 或 `missing`，不随意填 0。
 - 只使用 `publish_date <= analysis_date` 的财务数据和公告。
 - 东方财富网相关 AKShare 接口必须先启用 `akshare-proxy-patch`。

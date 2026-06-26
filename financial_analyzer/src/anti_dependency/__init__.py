@@ -1,0 +1,1 @@
+"""Anti-dependency mode package."""
