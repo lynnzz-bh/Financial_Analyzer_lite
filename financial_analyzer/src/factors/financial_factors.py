@@ -23,8 +23,8 @@ def compute_financial_factors(cleaned_reports: dict[str, list[dict[str, Any]]], 
         "扣非归母净利润同比": _yoy(income_rows, "扣非归母净利润"),
         "单季度营收同比": _yoy(income_rows, "营业收入"),
         "单季度扣非净利润同比": _yoy(income_rows, "扣非归母净利润"),
-        "近四季度滚动营收": _rolling_sum(income_rows, "营业收入", 4),
-        "近四季度滚动扣非净利润": _rolling_sum(income_rows, "扣非归母净利润", 4),
+        "近四季度滚动营收": _ttm(income_rows, "营业收入"),
+        "近四季度滚动扣非净利润": _ttm(income_rows, "扣非归母净利润"),
         "合同负债同比": _yoy(balance_rows, "合同负债"),
         "在建工程同比": _yoy(balance_rows, "在建工程"),
         "应收账款同比": _yoy(balance_rows, "应收账款"),
@@ -45,9 +45,11 @@ def compute_financial_factors(cleaned_reports: dict[str, list[dict[str, Any]]], 
         "PE TTM": _to_float(market_data.get("PE TTM")),
         "PB": _to_float(market_data.get("PB")),
         "PS": _to_float(market_data.get("PS")),
-        "PEG": _safe_div(_to_float(market_data.get("PE TTM")), _pct_to_number(_yoy(income_rows, "扣非归母净利润"))),
-        "市值/扣非净利润": _safe_div(_to_float(market_data.get("总市值")), latest_income.get("扣非归母净利润")),
-        "市值/经营现金流": _safe_div(_to_float(market_data.get("总市值")), latest_cash.get("经营活动现金流净额")),
+        # PEG 采用财务分析口径：PE TTM / TTM 扣非归母净利润同比。
+        # 东方财富等行情页可能使用最近年报归母净利润同比，因此展示值可能不同。
+        "PEG": _safe_div(_to_float(market_data.get("PE TTM")), _pct_to_number(_ttm_yoy(income_rows, "扣非归母净利润"))),
+        "市值/扣非净利润": _safe_div(_to_float(market_data.get("总市值")), _ttm(income_rows, "扣非归母净利润")),
+        "市值/经营现金流": _safe_div(_to_float(market_data.get("总市值")), _ttm(cash_rows, "经营活动现金流净额")),
     }
     factors["指标缺失数量"] = sum(1 for value in factors.values() if value is None)
     factors["指标总数量"] = len(factors) - 2
@@ -107,11 +109,51 @@ def _same_period_last_year(rows: list[dict[str, Any]], latest_row: dict[str, Any
     return None
 
 
-def _rolling_sum(rows: list[dict[str, Any]], field: str, window: int) -> float | None:
-    values = [_to_float(row.get(field)) for row in rows[-window:]]
-    if len(values) < window or any(value is None for value in values):
+def _ttm(rows: list[dict[str, Any]], field: str) -> float | None:
+    latest_row = _latest_row(rows)
+    period = _parse_period(latest_row.get("report_period"))
+    if period is None:
         return None
-    return float(sum(value for value in values if value is not None))
+    return _ttm_for_period(rows, field, period[0], period[1])
+
+
+def _ttm_yoy(rows: list[dict[str, Any]], field: str) -> float | None:
+    latest_row = _latest_row(rows)
+    period = _parse_period(latest_row.get("report_period"))
+    if period is None:
+        return None
+    latest_ttm = _ttm_for_period(rows, field, period[0], period[1])
+    base_ttm = _ttm_for_period(rows, field, period[0] - 1, period[1])
+    if latest_ttm is None or base_ttm in (None, 0):
+        return None
+    return latest_ttm / base_ttm - 1
+
+
+def _ttm_for_period(rows: list[dict[str, Any]], field: str, year: int, period_code: str) -> float | None:
+    current = _to_float(_row_for_period(rows, f"{year}{period_code}").get(field))
+    if current is None:
+        return None
+    if period_code == "A":
+        return current
+    annual = _to_float(_row_for_period(rows, f"{year - 1}A").get(field))
+    same_period_last_year = _to_float(_row_for_period(rows, f"{year - 1}{period_code}").get(field))
+    if annual is None or same_period_last_year is None:
+        return None
+    return current + annual - same_period_last_year
+
+
+def _row_for_period(rows: list[dict[str, Any]], period: str) -> dict[str, Any]:
+    for row in reversed(rows):
+        if row.get("report_period") == period:
+            return row
+    return {}
+
+
+def _parse_period(value: Any) -> tuple[int, str] | None:
+    match = re.fullmatch(r"(\d{4})(Q1|H1|Q3|A)", str(value or ""))
+    if not match:
+        return None
+    return int(match.group(1)), match.group(2)
 
 
 def _free_cash_flow(row: dict[str, Any]) -> float | None:

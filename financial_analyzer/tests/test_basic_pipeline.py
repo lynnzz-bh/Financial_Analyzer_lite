@@ -4,6 +4,7 @@ from datetime import date
 import json
 import pandas as pd
 import pytest
+from main import cleanup_old_output_files
 from src.anti_dependency import anti_dependency_mode
 from src.data_cleaner.financial_cleaner import normalize_financial_dataframe, normalize_money_to_yuan
 from src.data_fetcher import akshare_fetcher
@@ -154,6 +155,31 @@ def test_data_quality_warnings_for_empty_fetches() -> None:
     assert len(cleaned_warnings) == 3
 
 
+def test_cleanup_old_output_files_keeps_latest_date(tmp_path) -> None:
+    old_report = tmp_path / "600519_贵州茅台_2026-06-24_财务分析简报.md"
+    latest_report = tmp_path / "600519_贵州茅台_2026-06-26_财务分析简报.md"
+    old_review = tmp_path / "600519_2026-06-20_anti_dependency_review.md"
+    latest_review = tmp_path / "600519_2026-06-26_anti_dependency_review.md"
+    other_code_old_report = tmp_path / "601138_工业富联_2026-06-24_财务分析简报.md"
+    undated_file = tmp_path / ".gitkeep"
+    old_report.write_text("old", encoding="utf-8")
+    latest_report.write_text("latest", encoding="utf-8")
+    old_review.write_text("old review", encoding="utf-8")
+    latest_review.write_text("latest review", encoding="utf-8")
+    other_code_old_report.write_text("other old", encoding="utf-8")
+    undated_file.write_text("", encoding="utf-8")
+
+    deleted_paths = cleanup_old_output_files("600519", tmp_path)
+
+    assert deleted_paths == [old_report]
+    assert not old_report.exists()
+    assert latest_report.exists()
+    assert old_review.exists()
+    assert latest_review.exists()
+    assert other_code_old_report.exists()
+    assert undated_file.exists()
+
+
 def test_qwen_audit_receives_market_data_and_quality_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 
@@ -274,3 +300,26 @@ def test_yoy_uses_same_report_period_last_year() -> None:
     assert factors["扣非归母净利润同比"] == pytest.approx(1 / 3)
     assert factors["合同负债同比"] == pytest.approx(0.5)
     assert factors["在建工程同比"] == pytest.approx(1.0)
+
+
+def test_valuation_uses_ttm_denominators() -> None:
+    reports = {
+        "income_statement": [
+            {"report_period": "2023Q1", "扣非归母净利润": 5, "营业收入": 80},
+            {"report_period": "2023A", "扣非归母净利润": 80, "营业收入": 800},
+            {"report_period": "2024Q1", "扣非归母净利润": 10, "营业收入": 100},
+            {"report_period": "2024A", "扣非归母净利润": 100, "营业收入": 1000},
+            {"report_period": "2025Q1", "扣非归母净利润": 20, "营业收入": 140},
+        ],
+        "balance_sheet": [],
+        "cash_flow": [
+            {"report_period": "2024Q1", "经营活动现金流净额": 8},
+            {"report_period": "2024A", "经营活动现金流净额": 90},
+            {"report_period": "2025Q1", "经营活动现金流净额": 18},
+        ],
+    }
+    factors = compute_financial_factors(reports, {"PE TTM": 20, "总市值": 1100})
+    assert factors["近四季度滚动扣非净利润"] == pytest.approx(110)
+    assert factors["市值/扣非净利润"] == pytest.approx(10)
+    assert factors["市值/经营现金流"] == pytest.approx(11)
+    assert factors["PEG"] == pytest.approx(20 / ((110 / 85 - 1) * 100))

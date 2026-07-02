@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 import argparse
+from datetime import date
+from pathlib import Path
+import re
 import sys
 import pandas as pd
-from config.settings import PROCESSED_DIR, PROJECT_VERSION, RAW_DIR
+from config.settings import OUTPUT_DIR, PROCESSED_DIR, PROJECT_VERSION, RAW_DIR
 from src.anti_dependency.anti_dependency_mode import run_anti_dependency_mode
 from src.data_cleaner.financial_cleaner import clean_financial_reports
 from src.data_fetcher.akshare_fetcher import fetch_financial_reports, fetch_stock_info
@@ -22,6 +25,8 @@ from src.utils.logger import get_logger
 from src.utils.storage import save_dataframe, save_json
 
 logger = get_logger(__name__)
+OUTPUT_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+KEEP_LATEST_OUTPUT_ONLY = True
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,7 +38,50 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def cleanup_old_output_files(code: str, output_dir: Path = OUTPUT_DIR) -> list[Path]:
+    if not output_dir.exists():
+        return []
+
+    code_prefix = f"{code}_"
+    dated_files: list[tuple[date, Path]] = []
+    for path in output_dir.iterdir():
+        if not path.is_file():
+            continue
+        if not path.name.startswith(code_prefix):
+            continue
+        if "_anti_dependency_review" in path.stem:
+            continue
+        match = OUTPUT_DATE_PATTERN.search(path.name)
+        if not match:
+            continue
+        try:
+            output_date = date.fromisoformat(match.group(0))
+        except ValueError:
+            continue
+        dated_files.append((output_date, path))
+
+    if not dated_files:
+        return []
+
+    latest_date = max(output_date for output_date, _ in dated_files)
+    deleted_paths: list[Path] = []
+    for output_date, path in dated_files:
+        if output_date >= latest_date:
+            continue
+        path.unlink()
+        deleted_paths.append(path)
+    return deleted_paths
+
+
+def cleanup_output_if_requested(enabled: bool, code: str) -> None:
+    if not enabled:
+        return
+    deleted_paths = cleanup_old_output_files(code)
+    logger.info("已清理 data/output 中早于最新日期的文件：%s 个", len(deleted_paths))
+
+
 def main() -> int:
+    # 终端输入格式：先进入 financial_analyzer 目录，再执行 python main.py --code <6位A股代码> --date <YYYY-MM-DD> --mode "<分析内容>" [--anti-dependency]
     args = parse_args()
     try:
         code = validate_stock_code(args.code)
@@ -101,6 +149,7 @@ def main() -> int:
         save_json(context["llm_results"], PROCESSED_DIR / f"{code}_llm_results.json")
         report_path = generate_markdown_report(context)
         logger.info("报告已生成：%s", report_path)
+        cleanup_output_if_requested(KEEP_LATEST_OUTPUT_ONLY, code)
         logger.info("核心结果：综合评分 %s/100，可信度 %s，风险红旗 %s 条", financial_score.get("total_score"), financial_score.get("score_confidence"), len(risk_flags))
         return 0
     except AksharePatchRequiredError as exc:
