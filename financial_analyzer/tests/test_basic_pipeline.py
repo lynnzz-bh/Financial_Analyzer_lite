@@ -2,8 +2,10 @@
 
 from datetime import date
 import json
+import sys
 import pandas as pd
 import pytest
+import main as main_module
 from main import cleanup_old_output_files
 from src.anti_dependency import anti_dependency_mode
 from src.data_cleaner.financial_cleaner import normalize_financial_dataframe, normalize_money_to_yuan
@@ -18,6 +20,7 @@ from src.data_fetcher.astock_data_provider import (
 from src.factors.financial_factors import compute_financial_factors
 from src.llm import llm_pipeline
 from src.factors.risk_flags import generate_risk_flags
+from src.report import report_generator
 from src.scoring.financial_score import score_financials
 from src.utils.data_quality import inspect_cleaned_reports_quality, inspect_raw_fetch_quality, summarize_quality_status
 from src.utils.date_utils import parse_analysis_date, validate_stock_code
@@ -175,6 +178,82 @@ def test_data_quality_warning_for_missing_disclosure_date() -> None:
 
 def test_data_quality_status_ok_without_warnings() -> None:
     assert summarize_quality_status([]) == "ok"
+
+
+def test_failure_report_omits_score_rating_and_trade_meaning(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(report_generator, "OUTPUT_DIR", tmp_path)
+    path = report_generator.generate_data_failure_report({
+        "code": "600519",
+        "mode": "买入前检查",
+        "analysis_date": "2026-06-24",
+        "stock_info": {"股票代码": "600519", "股票简称": "贵州茅台"},
+        "market_data": {"股票简称": "贵州茅台"},
+        "data_quality_status": "fatal",
+        "data_quality_warnings": [{"level": "fatal", "stage": "raw_fetch", "source": "financial_reports", "message": "三张财报中 2 张为空"}],
+    })
+    content = path.read_text(encoding="utf-8")
+    assert "数据失败报告" in content
+    assert "fatal" in content
+    assert "综合评分" not in content
+    assert "财务评级" not in content
+    assert "交易意义" not in content
+
+
+def test_warning_report_marks_degraded_analysis(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(report_generator, "OUTPUT_DIR", tmp_path)
+    path = report_generator.generate_markdown_report({
+        "code": "600519",
+        "mode": "买入前检查",
+        "analysis_date": "2026-06-24",
+        "stock_info": {"股票代码": "600519", "股票简称": "贵州茅台"},
+        "market_data": {"股票简称": "贵州茅台"},
+        "financial_score": {"total_score": 60, "score_confidence": "medium"},
+        "financial_factors": {},
+        "risk_flags": [],
+        "announcements": [],
+        "llm_results": {},
+        "data_quality_status": "warning",
+        "data_quality_warnings": [{"level": "warning", "stage": "raw_fetch", "source": "market_data", "message": "估值字段缺失"}],
+    })
+    content = path.read_text(encoding="utf-8")
+    assert "分析状态：降级分析" in content
+    assert "数据质量状态：warning" in content
+    assert "估值字段缺失" in content
+
+
+def test_main_raw_fatal_generates_failure_report_without_scoring(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw_dir = tmp_path / "raw"
+    processed_dir = tmp_path / "processed"
+    output_dir = tmp_path / "output"
+    monkeypatch.setattr(main_module, "RAW_DIR", raw_dir)
+    monkeypatch.setattr(main_module, "PROCESSED_DIR", processed_dir)
+    monkeypatch.setattr(main_module, "OUTPUT_DIR", output_dir)
+    monkeypatch.setattr(report_generator, "OUTPUT_DIR", output_dir)
+    monkeypatch.setattr(sys, "argv", ["main.py", "--code", "600519", "--date", "2026-06-24", "--mode", "买入前检查"])
+    monkeypatch.setattr(main_module, "fetch_stock_info", lambda code: {"股票代码": code, "股票简称": "贵州茅台"})
+    monkeypatch.setattr(main_module, "fetch_market_data", lambda code, analysis_date: {"股票简称": "贵州茅台", "最新收盘价": 100, "总市值": 1000, "PE TTM": 20, "PB": 3, "PS": 5})
+    monkeypatch.setattr(main_module, "fetch_financial_reports", lambda code: {
+        "income_statement": pd.DataFrame(),
+        "balance_sheet": pd.DataFrame(),
+        "cash_flow": pd.DataFrame(),
+    })
+    monkeypatch.setattr(main_module, "fetch_announcements", lambda code, analysis_date: [])
+
+    def forbidden_call(*args, **kwargs):
+        raise AssertionError("fatal 数据不应继续进入清洗、评分或 LLM")
+
+    monkeypatch.setattr(main_module, "clean_financial_reports", forbidden_call)
+    monkeypatch.setattr(main_module, "compute_financial_factors", forbidden_call)
+    monkeypatch.setattr(main_module, "score_financials", forbidden_call)
+    monkeypatch.setattr(main_module, "run_llm_pipeline", forbidden_call)
+
+    assert main_module.main() == 0
+    reports = list(output_dir.glob("*数据失败报告.md"))
+    assert len(reports) == 1
+    content = reports[0].read_text(encoding="utf-8")
+    assert "数据失败报告" in content
+    assert "综合评分" not in content
+    assert not list(processed_dir.glob("*financial_score.json"))
 
 
 def test_cleanup_old_output_files_keeps_latest_date(tmp_path) -> None:

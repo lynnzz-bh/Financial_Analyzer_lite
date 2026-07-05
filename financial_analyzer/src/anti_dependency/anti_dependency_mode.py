@@ -79,7 +79,10 @@ def run_anti_dependency_mode(
     human_judgment = collect_human_judgment(input_func=input_func, output_func=output_func)
 
     cleaned_reports = clean_financial_reports(reports, analysis_date)
-    all_warnings = [*data_quality_warnings, *inspect_cleaned_reports_quality(cleaned_reports)]
+    if any(item.get("stage") == "cleaned_data" for item in data_quality_warnings):
+        all_warnings = list(data_quality_warnings)
+    else:
+        all_warnings = [*data_quality_warnings, *inspect_cleaned_reports_quality(cleaned_reports)]
     factors = compute_financial_factors(cleaned_reports, market_data)
     risk_flags = generate_risk_flags(factors, cleaned_reports, announcements)
     financial_score = score_financials(factors)

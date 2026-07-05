@@ -17,11 +17,23 @@ def generate_markdown_report(context: dict[str, Any]) -> Path:
     return path
 
 
+def generate_data_failure_report(context: dict[str, Any]) -> Path:
+    stock_info, market_data = context.get("stock_info", {}), context.get("market_data", {})
+    code = str(stock_info.get("股票代码") or context.get("code"))
+    name = str(market_data.get("股票简称") or stock_info.get("股票简称") or "未知简称")
+    content = _build_data_failure_report(context, code, name)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = OUTPUT_DIR / _safe_filename(f"{code}_{name}_{context.get('analysis_date')}_数据失败报告.md")
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def _build_report(context: dict[str, Any], code: str, name: str, rating: str) -> str:
     score, factors, risks = context.get("financial_score", {}), context.get("financial_factors", {}), context.get("risk_flags", [])
     llm = context.get("llm_results", {})
+    data_quality_status = context.get("data_quality_status", "ok")
     lines = [
-        f"# {code} {name} 财务分析简报", "", f"版本：{PROJECT_VERSION}", f"分析日期：{context.get('analysis_date')}", f"分析目标：{context.get('mode')}", f"数据可信度：{score.get('score_confidence', 'unknown')}", f"综合评分：{score.get('total_score', 'missing')}/100", f"财务评级：{rating}",
+        f"# {code} {name} 财务分析简报", "", f"版本：{PROJECT_VERSION}", f"分析日期：{context.get('analysis_date')}", f"分析目标：{context.get('mode')}", f"分析状态：{_analysis_status_label(data_quality_status)}", f"数据质量状态：{data_quality_status}", f"数据可信度：{score.get('score_confidence', 'unknown')}", f"综合评分：{score.get('total_score', 'missing')}/100", f"财务评级：{rating}",
         "", "## 数据质量警告", "", _data_quality_lines(context.get("data_quality_warnings", [])),
         "", "## 一、核心结论", "", llm.get("deepseek", {}).get("content", "LLM 分析不可用。"),
         "", "## 二、财务评分", "", "| 维度 | 分数 | 解释 |", "| --- | ---: | --- |",
@@ -41,6 +53,36 @@ def _build_report(context: dict[str, Any], code: str, name: str, rating: str) ->
         "", "## 十一、交易意义", "", _trade_meaning(score.get("total_score"), risks), "",
     ]
     return "\n".join(lines)
+
+
+def _build_data_failure_report(context: dict[str, Any], code: str, name: str) -> str:
+    data_quality_status = context.get("data_quality_status", "fatal")
+    lines = [
+        f"# {code} {name} 数据失败报告",
+        "",
+        f"版本：{PROJECT_VERSION}",
+        f"分析日期：{context.get('analysis_date')}",
+        f"分析目标：{context.get('mode')}",
+        f"数据质量状态：{data_quality_status}",
+        "",
+        "## 失败原因",
+        "",
+        _data_quality_lines(context.get("data_quality_warnings", [])),
+        "",
+        "## 输出说明",
+        "",
+        "本次数据质量为 fatal，系统已停止财务指标、评分、LLM 和使用建议生成。",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _analysis_status_label(data_quality_status: str) -> str:
+    if data_quality_status == "warning":
+        return "降级分析"
+    if data_quality_status == "fatal":
+        return "数据失败"
+    return "正常分析"
 
 
 def _factor_lines(factors: dict[str, Any], keys: list[str]) -> str:

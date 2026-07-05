@@ -16,10 +16,10 @@ from src.data_fetcher.market_fetcher import fetch_market_data
 from src.factors.financial_factors import compute_financial_factors
 from src.factors.risk_flags import generate_risk_flags
 from src.llm.llm_pipeline import run_llm_pipeline
-from src.report.report_generator import generate_markdown_report
+from src.report.report_generator import generate_data_failure_report, generate_markdown_report
 from src.scoring.financial_score import score_financials
 from src.utils.akshare_patch import AksharePatchRequiredError
-from src.utils.data_quality import inspect_cleaned_reports_quality, inspect_raw_fetch_quality
+from src.utils.data_quality import inspect_cleaned_reports_quality, inspect_raw_fetch_quality, summarize_quality_status
 from src.utils.date_utils import parse_analysis_date, validate_stock_code
 from src.utils.logger import get_logger
 from src.utils.storage import save_dataframe, save_json
@@ -104,6 +104,26 @@ def main() -> int:
         for report_name, df in reports.items():
             if isinstance(df, pd.DataFrame):
                 save_dataframe(df, RAW_DIR / f"{code}_{report_name}.csv")
+        data_quality_status = summarize_quality_status(data_quality_warnings)
+        if data_quality_status == "fatal":
+            save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
+            report_path = generate_data_failure_report(_failure_context(code, args.mode, analysis_date, stock_info, market_data, data_quality_warnings, data_quality_status))
+            logger.error("数据质量 fatal，已生成失败报告：%s", report_path)
+            cleanup_output_if_requested(KEEP_LATEST_OUTPUT_ONLY, code)
+            return 0
+        cleaned_reports = clean_financial_reports(reports, analysis_date)
+        data_quality_warnings.extend(inspect_cleaned_reports_quality(cleaned_reports))
+        for warning in data_quality_warnings:
+            if warning["stage"] == "cleaned_data":
+                logger.warning("数据质量警告：%s | %s | %s", warning["stage"], warning["source"], warning["message"])
+        data_quality_status = summarize_quality_status(data_quality_warnings)
+        save_json(cleaned_reports, PROCESSED_DIR / f"{code}_cleaned_reports.json")
+        if data_quality_status == "fatal":
+            save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
+            report_path = generate_data_failure_report(_failure_context(code, args.mode, analysis_date, stock_info, market_data, data_quality_warnings, data_quality_status))
+            logger.error("数据质量 fatal，已生成失败报告：%s", report_path)
+            cleanup_output_if_requested(KEEP_LATEST_OUTPUT_ONLY, code)
+            return 0
         if args.anti_dependency:
             save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
             record = run_anti_dependency_mode(
@@ -119,15 +139,9 @@ def main() -> int:
             logger.info("Anti-dependency 记录已生成：%s", PROCESSED_DIR / f"{code}_anti_dependency_record.json")
             logger.info("Anti-dependency 复盘已生成：%s", record.get("output_path"))
             return 0
-        cleaned_reports = clean_financial_reports(reports, analysis_date)
-        data_quality_warnings.extend(inspect_cleaned_reports_quality(cleaned_reports))
-        for warning in data_quality_warnings:
-            if warning["stage"] == "cleaned_data":
-                logger.warning("数据质量警告：%s | %s | %s", warning["stage"], warning["source"], warning["message"])
         factors = compute_financial_factors(cleaned_reports, market_data)
         risk_flags = generate_risk_flags(factors, cleaned_reports, announcements)
         financial_score = score_financials(factors)
-        save_json(cleaned_reports, PROCESSED_DIR / f"{code}_cleaned_reports.json")
         save_json(factors, PROCESSED_DIR / f"{code}_financial_factors.json")
         save_json(risk_flags, PROCESSED_DIR / f"{code}_risk_flags.json")
         save_json(financial_score, PROCESSED_DIR / f"{code}_financial_score.json")
@@ -144,6 +158,7 @@ def main() -> int:
             "financial_score": financial_score,
             "announcements": announcements,
             "data_quality_warnings": data_quality_warnings,
+            "data_quality_status": data_quality_status,
         }
         context["llm_results"] = run_llm_pipeline(context)
         save_json(context["llm_results"], PROCESSED_DIR / f"{code}_llm_results.json")
@@ -159,6 +174,26 @@ def main() -> int:
     except Exception as exc:
         logger.exception("流程执行失败：%s", exc)
         return 3
+
+
+def _failure_context(
+    code: str,
+    mode: str,
+    analysis_date: date,
+    stock_info: dict,
+    market_data: dict,
+    data_quality_warnings: list[dict[str, str]],
+    data_quality_status: str,
+) -> dict:
+    return {
+        "code": code,
+        "mode": mode,
+        "analysis_date": analysis_date.isoformat(),
+        "stock_info": stock_info,
+        "market_data": market_data,
+        "data_quality_warnings": data_quality_warnings,
+        "data_quality_status": data_quality_status,
+    }
 
 
 if __name__ == "__main__":
