@@ -1,15 +1,23 @@
-Financial Analyzer 0.4.1 项目说明
+Financial Analyzer 0.5.1 项目说明
 
 一、整体工作流程
 用户通过 main.py 输入股票代码、分析日期和分析目标。系统读取 .env 配置，确认东方财富网相关 AKShare 接口是否具备补丁 token；随后抓取公司基础信息、市场行情、三张财务报表和巨潮公告。原始数据保存到 data/raw。
 
 抓取完成后，financial_cleaner.py 统一字段名、报告期、披露日期和金额单位。所有金额统一转换为元，缺失值保留为空，不用 0 伪装。清洗结果保存到 data/processed。
 
-financial_factors.py 使用 Python 规则计算盈利、成长、现金流、资产风险和估值指标。risk_flags.py 根据指标、报表和公告标题生成风险红旗。financial_score.py 按五个维度生成 100 分制财务评分和可信度。
+business_fetcher.py 抓取主营构成、公司简介和申万行业变更信息，build_business_context 将其整理为报告可读的行业与主营业务上下文。补充业务数据缺失时只作为 info 提示，不影响主财务流程。
+
+financial_factors.py 使用 Python 规则计算盈利、成长、现金流、资产风险和估值指标。0.5.0 新增 metric_registry.py 作为指标口径文字说明与来源追溯层，但不参与计算、不修正结果。系统基于 cleaned_reports、market_data 和 financial_factors 生成 metric_provenance.json，用于说明每个指标的公式、来源表、来源字段、报告期、披露日期和追溯状态。
+
+盈利指标中 ROE 分为年度口径和季度口径：年度ROE 使用最新年报归母净利润和年报股东权益，季度ROE 使用最新非年报报告期利润和股东权益。兼容字段 ROE 暂时等同于年度ROE，后续模块应优先明确使用年度ROE或季度ROE。
+
+metric_provenance 会根据 report_period 为 income_statement 和 balance_sheet 来源标记年度、半年度或季度口径；报告中的来源摘要会展示类似“年度income_statement”“季度balance_sheet”的前缀，避免把不同期间口径混读。
+
+risk_flags.py 根据指标、报表和公告标题生成风险红旗。financial_score.py 按五个维度生成 100 分制财务评分和可信度。
 
 llm_pipeline.py 在 API Key 已配置时调用 DeepSeek 生成解释性财务分析，再调用 Qwen 做事实、逻辑和反方审核。未配置 API Key 时，系统不伪造模型输出，而是写入明确的占位状态。
 
-report_generator.py 汇总股票信息、市场数据、指标、评分、风险红旗、LLM 输出和审核结论，生成 Markdown 财务分析简报，并保存到 data/output。
+report_generator.py 汇总股票信息、市场数据、指标、指标口径追溯、评分、风险红旗、LLM 输出和审核结论，生成 Markdown 财务分析简报，并保存到 data/output。报告中会展示“指标口径与来源追溯”章节，关键指标旁也会展示公式和来源摘要。
 
 二、目录与文件功能
 README.md：面向使用者，说明安装、配置、运行方式和输出位置。
@@ -18,7 +26,7 @@ requirements.txt：记录项目依赖，包括 akshare、akshare-proxy-patch、p
 main.py：命令行入口，负责串联完整工作流，不承载具体业务计算细节。
 config/settings.py：集中读取版本号、路径、LLM 配置和 AKShare 补丁配置。
 data/raw：保存 AKShare 与公告接口返回的原始数据，便于追溯。
-data/processed：保存清洗数据、指标、评分、风险红旗和 LLM 中间结果。
+data/processed：保存清洗数据、指标、指标来源追溯、评分、风险红旗和 LLM 中间结果。
 data/output：保存最终 Markdown 财务分析简报。
 src/utils/logger.py：统一日志格式。
 src/utils/date_utils.py：日期解析、股票代码校验和报告期格式化。
@@ -28,16 +36,20 @@ src/data_fetcher/akshare_fetcher.py：抓取公司基础信息和三张财务报
 src/data_fetcher/market_fetcher.py：抓取行情、估值和近 20/60 日涨跌幅。
 src/data_fetcher/announcement_fetcher.py：抓取巨潮公告标题、日期、链接和公告类型。
 src/data_fetcher/astock_data_provider.py：封装 a-stock-data 补充数据源，提供腾讯行情、东方财富板块/行业/资金流等独立抓取函数，暂不接入主流程。
+src/data_fetcher/business_fetcher.py：抓取并整理公司简介、主营构成和申万行业信息，为报告提供主营业务与行业上下文。
 src/data_cleaner/financial_cleaner.py：统一字段名、金额单位、报告期和披露日期。
 src/factors/financial_factors.py：计算财务指标，处理缺失值和除零问题。
+src/factors/metric_registry.py：保存指标公式、口径、来源字段和 provenance 生成逻辑。0.5.0 中仅作为说明层，不参与指标计算。
 src/factors/risk_flags.py：按可复现规则生成风险红旗。
 src/scoring/financial_score.py：按五个维度生成 100 分制评分。
 src/llm/prompts.py：保存 DeepSeek 分析提示词和 Qwen 审核提示词。
 src/llm/deepseek_client.py：封装 DeepSeek OpenAI-compatible 调用。
 src/llm/qwen_client.py：封装 Qwen OpenAI-compatible 调用。
 src/llm/llm_pipeline.py：组织 DeepSeek 分析和 Qwen 审核链路。
-src/report/report_generator.py：生成 Markdown 简报。
-tests/test_basic_pipeline.py：覆盖日期、单位转换、指标、风险和评分等基础逻辑。
+src/report/report_generator.py：生成 Markdown 简报，并展示数据质量、行业、指标口径追溯、评分、风险和 LLM 审核结论。
+tests/test_basic_pipeline.py：覆盖日期、单位转换、指标、风险、评分、registry 与 factors 字段一致性、metric_provenance schema 快照和主流程落盘等基础逻辑。
 
 三、数据与风控原则
-本项目优先使用官方或准官方数据源。公告以巨潮资讯等官方披露为主，新闻和研报不作为 0.4.1 默认数据源。所有数据必须遵守分析日期原则。LLM 只解释和审核，不生成财务指标、不决定评分。
+本项目优先使用官方或准官方数据源。公告以巨潮资讯等官方披露为主，新闻和研报不作为 0.5.1 默认数据源。所有数据必须遵守分析日期原则。LLM 只解释和审核，不生成财务指标、不决定评分。
+
+0.5.0 的 registry 只解释现有指标口径，不参与计算路径。metric_provenance 只追溯现有结果的来源，不尝试修正结果；0.5.1 增加 ROE 年度/季度拆分和财报期间前缀；后续 0.5.2 再补充原始字段和抓取函数审计，0.5.3 再试运行 registry 与计算契约。

@@ -17,7 +17,7 @@ def score_financials(factors: dict[str, Any]) -> dict[str, Any]:
 
 
 def _score_profitability(factors: dict[str, Any]) -> int:
-    return _points([(factors.get("毛利率"), 0.3, 5), (factors.get("净利率"), 0.1, 5), (factors.get("扣非净利率"), 0.08, 5), (factors.get("ROE"), 0.12, 5)])
+    return _points([(factors.get("毛利率"), 0.3, 5), (factors.get("净利率"), 0.1, 5), (factors.get("扣非净利率"), 0.08, 5), (factors.get("年度ROE", factors.get("ROE")), 0.12, 5)])
 
 
 def _score_growth(factors: dict[str, Any]) -> int:

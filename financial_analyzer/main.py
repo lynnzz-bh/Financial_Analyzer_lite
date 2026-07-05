@@ -15,6 +15,7 @@ from src.data_fetcher.announcement_fetcher import fetch_announcements
 from src.data_fetcher.business_fetcher import build_business_context, fetch_business_source_tables
 from src.data_fetcher.market_fetcher import fetch_market_data
 from src.factors.financial_factors import compute_financial_factors
+from src.factors.metric_registry import build_metric_provenance
 from src.factors.risk_flags import generate_risk_flags
 from src.llm.llm_pipeline import run_llm_pipeline
 from src.report.report_generator import generate_data_failure_report, generate_markdown_report
@@ -149,9 +150,11 @@ def main() -> int:
             logger.info("Anti-dependency 复盘已生成：%s", record.get("output_path"))
             return 0
         factors = compute_financial_factors(cleaned_reports, market_data)
+        metric_provenance = build_metric_provenance(cleaned_reports, market_data, factors)
         risk_flags = generate_risk_flags(factors, cleaned_reports, announcements)
         financial_score = score_financials(factors)
         save_json(factors, PROCESSED_DIR / f"{code}_financial_factors.json")
+        save_json(metric_provenance, PROCESSED_DIR / f"{code}_metric_provenance.json")
         save_json(risk_flags, PROCESSED_DIR / f"{code}_risk_flags.json")
         save_json(financial_score, PROCESSED_DIR / f"{code}_financial_score.json")
         save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
@@ -163,6 +166,7 @@ def main() -> int:
             "market_data": market_data,
             "cleaned_reports": cleaned_reports,
             "financial_factors": factors,
+            "metric_provenance": metric_provenance,
             "risk_flags": risk_flags,
             "financial_score": financial_score,
             "announcements": announcements,

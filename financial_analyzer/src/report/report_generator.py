@@ -32,6 +32,7 @@ def _build_report(context: dict[str, Any], code: str, name: str, rating: str) ->
     score, factors, risks = context.get("financial_score", {}), context.get("financial_factors", {}), context.get("risk_flags", [])
     llm = context.get("llm_results", {})
     data_quality_status = context.get("data_quality_status", "ok")
+    metric_provenance = context.get("metric_provenance", {})
     lines = [
         f"# {code} {name} 财务分析简报", "", f"版本：{PROJECT_VERSION}", f"分析日期：{context.get('analysis_date')}", f"分析目标：{context.get('mode')}", f"分析状态：{_analysis_status_label(data_quality_status)}", f"数据质量状态：{data_quality_status}", f"数据可信度：{score.get('score_confidence', 'unknown')}", f"综合评分：{score.get('total_score', 'missing')}/100", f"财务评级：{rating}",
         "", "## 数据质量警告", "", _data_quality_lines(context.get("data_quality_warnings", [])),
@@ -43,15 +44,16 @@ def _build_report(context: dict[str, Any], code: str, name: str, rating: str) ->
         f"| 现金流质量 | {score.get('cashflow_score', 0)}/20 | Python 规则评分 |",
         f"| 资产安全 | {score.get('asset_safety_score', 0)}/20 | Python 规则评分 |",
         f"| 估值合理性 | {score.get('valuation_score', 0)}/20 | Python 规则评分 |",
-        "", "## 三、盈利能力", "", _factor_lines(factors, ["毛利率", "净利率", "扣非净利率", "ROE", "ROA", "研发费用率"]),
-        "", "## 四、成长兑现", "", _factor_lines(factors, ["营收同比", "归母净利润同比", "扣非归母净利润同比", "近四季度滚动营收", "近四季度滚动扣非净利润"]),
-        "", "## 五、现金流质量", "", _factor_lines(factors, ["经营现金流/归母净利润", "经营现金流/扣非归母净利润", "销售收现比", "自由现金流", "资本开支/营业收入"]),
-        "", "## 六、资产风险", "", _factor_lines(factors, ["资产负债率", "有息负债率", "短债/货币资金", "应收账款/营业收入", "存货/营业收入", "商誉/净资产"]),
-        "", "## 七、估值压力", "", _factor_lines(factors, ["PE TTM", "PB", "PS", "PEG", "市值/扣非净利润", "市值/经营现金流"]),
-        "", "## 八、公告与消息面", "", _announcement_lines(context.get("announcements", [])),
-        "", "## 九、风险红旗", "", _risk_lines(risks),
-        "", "## 十、审核结论", "", llm.get("qwen", {}).get("content", "Qwen 审核不可用。"),
-        "", "## 十一、交易意义", "", _trade_meaning(score.get("total_score"), risks), "",
+        "", "## 三、指标口径与来源追溯", "", _provenance_lines(metric_provenance, ["毛利率", "年度ROE", "季度ROE", "自由现金流", "资产负债率", "PE TTM", "PEG"]),
+        "", "## 四、盈利能力", "", _factor_lines(factors, ["毛利率", "净利率", "扣非净利率", "年度ROE", "季度ROE", "ROA", "研发费用率"], metric_provenance),
+        "", "## 五、成长兑现", "", _factor_lines(factors, ["营收同比", "归母净利润同比", "扣非归母净利润同比", "近四季度滚动营收", "近四季度滚动扣非净利润"], metric_provenance),
+        "", "## 六、现金流质量", "", _factor_lines(factors, ["经营现金流/归母净利润", "经营现金流/扣非归母净利润", "销售收现比", "自由现金流", "资本开支/营业收入"], metric_provenance),
+        "", "## 七、资产风险", "", _factor_lines(factors, ["资产负债率", "有息负债率", "短债/货币资金", "应收账款/营业收入", "存货/营业收入", "商誉/净资产"], metric_provenance),
+        "", "## 八、估值压力", "", _factor_lines(factors, ["PE TTM", "PB", "PS", "PEG", "市值/扣非净利润", "市值/经营现金流"], metric_provenance),
+        "", "## 九、公告与消息面", "", _announcement_lines(context.get("announcements", [])),
+        "", "## 十、风险红旗", "", _risk_lines(risks),
+        "", "## 十一、审核结论", "", llm.get("qwen", {}).get("content", "Qwen 审核不可用。"),
+        "", "## 十二、交易意义", "", _trade_meaning(score.get("total_score"), risks), "",
     ]
     return "\n".join(lines)
 
@@ -86,8 +88,48 @@ def _analysis_status_label(data_quality_status: str) -> str:
     return "正常分析"
 
 
-def _factor_lines(factors: dict[str, Any], keys: list[str]) -> str:
-    return "\n".join(f"- {key}：{_fmt(factors.get(key))}" for key in keys)
+def _factor_lines(factors: dict[str, Any], keys: list[str], metric_provenance: dict[str, Any] | None = None) -> str:
+    return "\n".join(f"- {key}：{_fmt(factors.get(key))}{_metric_note(metric_provenance, key)}" for key in keys)
+
+
+def _provenance_lines(metric_provenance: dict[str, Any], keys: list[str]) -> str:
+    metrics = metric_provenance.get("metrics", {}) if isinstance(metric_provenance, dict) else {}
+    if not metrics:
+        return "口径追溯不可用。"
+    lines = [
+        f"- 追溯模式：{metric_provenance.get('registry_mode', 'unknown')}，仅做文字说明和现有来源追溯，不参与计算。",
+    ]
+    for key in keys:
+        metric = metrics.get(key)
+        if not metric:
+            lines.append(f"- {key}：口径追溯不可用。")
+            continue
+        lines.append(
+            f"- {key}：{metric.get('formula_text', '公式缺失')}；来源：{_source_summary(metric.get('sources', []))}；状态：{metric.get('status', 'unknown')}。"
+        )
+    return "\n".join(lines)
+
+
+def _metric_note(metric_provenance: dict[str, Any] | None, key: str) -> str:
+    if not metric_provenance:
+        return ""
+    metric = metric_provenance.get("metrics", {}).get(key)
+    if not metric:
+        return ""
+    return f"（口径：{metric.get('formula_text', '公式缺失')}；来源：{_source_summary(metric.get('sources', []))}）"
+
+
+def _source_summary(sources: list[dict[str, Any]]) -> str:
+    if not sources:
+        return "missing"
+    reports = []
+    for source in sources:
+        report = source.get("report") or "missing"
+        prefix = source.get("period_prefix")
+        label = f"{prefix}{report}" if prefix and report in {"income_statement", "balance_sheet"} else report
+        if label not in reports:
+            reports.append(label)
+    return "、".join(reports)
 
 
 def _business_context_lines(business_context: dict[str, Any]) -> str:

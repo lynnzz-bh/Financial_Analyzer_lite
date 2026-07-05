@@ -11,11 +11,17 @@ def compute_financial_factors(cleaned_reports: dict[str, list[dict[str, Any]]], 
     balance_rows = cleaned_reports.get("balance_sheet", [])
     cash_rows = cleaned_reports.get("cash_flow", [])
     latest_income, latest_balance, latest_cash = _latest_row(income_rows), _latest_row(balance_rows), _latest_row(cash_rows)
+    annual_income, annual_balance = _latest_annual_row(income_rows), _latest_annual_row(balance_rows)
+    quarterly_income, quarterly_balance = _latest_quarterly_row(income_rows), _latest_quarterly_row(balance_rows)
+    annual_roe = _safe_div(annual_income.get("归母净利润"), annual_balance.get("股东权益"))
+    quarterly_roe = _safe_div(quarterly_income.get("归母净利润"), quarterly_balance.get("股东权益"))
     factors = {
         "毛利率": _safe_div(_gross_profit(latest_income), latest_income.get("营业收入")),
         "净利率": _safe_div(latest_income.get("归母净利润"), latest_income.get("营业收入")),
         "扣非净利率": _safe_div(latest_income.get("扣非归母净利润"), latest_income.get("营业收入")),
-        "ROE": _safe_div(latest_income.get("归母净利润"), latest_balance.get("股东权益")),
+        "年度ROE": annual_roe,
+        "季度ROE": quarterly_roe,
+        "ROE": annual_roe,
         "ROA": _safe_div(latest_income.get("归母净利润"), latest_balance.get("总资产")),
         "研发费用率": _safe_div(latest_income.get("研发费用"), latest_income.get("营业收入")),
         "营收同比": _yoy(income_rows, "营业收入"),
@@ -58,6 +64,21 @@ def compute_financial_factors(cleaned_reports: dict[str, list[dict[str, Any]]], 
 
 def _latest_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return rows[-1] if rows else {}
+
+
+def _latest_annual_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    for row in reversed(rows):
+        if str(row.get("report_period") or "").endswith("A"):
+            return row
+    return _latest_row(rows)
+
+
+def _latest_quarterly_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    for row in reversed(rows):
+        period = str(row.get("report_period") or "")
+        if period and not period.endswith("A"):
+            return row
+    return _latest_row(rows)
 
 
 def _safe_div(numerator: Any, denominator: Any) -> float | None:
