@@ -57,6 +57,20 @@ def inspect_cleaned_reports_quality(cleaned_reports: dict[str, list[dict[str, An
     return warnings
 
 
+def inspect_business_context_quality(business_context: dict[str, Any]) -> list[QualityItem]:
+    items: list[QualityItem] = []
+    profile = business_context.get("company_profile", {})
+    composition = business_context.get("business_composition", {})
+    sw_industry = business_context.get("sw_industry", {})
+    if not profile.get("main_business"):
+        items.append(_info("business_context", "company_profile", "主营业务信息缺失"))
+    if not sw_industry:
+        items.append(_info("business_context", "sw_industry", "申万行业分类缺失"))
+    if not composition.get("by_industry") and not composition.get("by_product"):
+        items.append(_info("business_context", "business_composition", "主营收入构成缺失"))
+    return items
+
+
 def summarize_quality_status(items: list[QualityItem]) -> str:
     levels = {item.get("level") for item in items}
     if "fatal" in levels:
@@ -64,6 +78,10 @@ def summarize_quality_status(items: list[QualityItem]) -> str:
     if "warning" in levels:
         return "warning"
     return "ok"
+
+
+def _info(stage: str, source: str, message: str) -> QualityItem:
+    return _item("info", stage, source, message)
 
 
 def _fatal(stage: str, source: str, message: str) -> QualityItem:

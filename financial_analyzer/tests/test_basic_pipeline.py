@@ -17,12 +17,13 @@ from src.data_fetcher.astock_data_provider import (
     parse_eastmoney_fund_flow_klines,
     parse_tencent_quote_payload,
 )
+from src.data_fetcher.business_fetcher import build_business_context
 from src.factors.financial_factors import compute_financial_factors
 from src.llm import llm_pipeline
 from src.factors.risk_flags import generate_risk_flags
 from src.report import report_generator
 from src.scoring.financial_score import score_financials
-from src.utils.data_quality import inspect_cleaned_reports_quality, inspect_raw_fetch_quality, summarize_quality_status
+from src.utils.data_quality import inspect_business_context_quality, inspect_cleaned_reports_quality, inspect_raw_fetch_quality, summarize_quality_status
 from src.utils.date_utils import parse_analysis_date, validate_stock_code
 
 
@@ -180,6 +181,41 @@ def test_data_quality_status_ok_without_warnings() -> None:
     assert summarize_quality_status([]) == "ok"
 
 
+def test_business_context_builds_latest_composition_and_sw_industry() -> None:
+    profile = pd.DataFrame([
+        {"公司名称": "富士康工业互联网股份有限公司", "所属行业": "计算机、通信和其他电子设备制造业", "主营业务": "各类电子设备产品的设计、研发、制造与销售业务。", "经营范围": "工业互联网技术研发。"}
+    ])
+    composition = pd.DataFrame([
+        {"报告日期": "2024-12-31", "分类类型": "按行业分类", "主营构成": "旧业务", "主营收入": 100, "收入比例": 1.0, "毛利率": 0.1},
+        {"报告日期": "2025-12-31", "分类类型": "按行业分类", "主营构成": "云计算", "主营收入": 602678703000, "收入比例": 0.667502, "毛利率": 0.0573},
+        {"报告日期": "2025-12-31", "分类类型": "按行业分类", "主营构成": "通信及移动网络设备", "主营收入": 297851348000, "收入比例": 0.329888, "毛利率": 0.092836},
+        {"报告日期": "2025-12-31", "分类类型": "按产品分类", "主营构成": "3C电子产品", "主营收入": 901224002000, "收入比例": 0.998158, "毛利率": 0.069357},
+        {"报告日期": "2025-12-31", "分类类型": "按地区分类", "主营构成": "中国大陆及其他", "主营收入": 504808399000, "收入比例": 0.559105},
+    ])
+    industry_change = pd.DataFrame([
+        {"分类标准": "申银万国行业分类标准(旧)", "行业门类": "电子", "行业次类": "电子制造", "行业大类": "电子系统组装", "行业中类": "电子系统组装", "行业编码": "S270501", "变更日期": "2018-05-28"},
+        {"分类标准": "申银万国行业分类标准", "行业门类": "电子", "行业次类": "消费电子", "行业大类": "消费电子零部件及组装", "行业中类": "消费电子零部件及组装", "行业编码": "S270504", "变更日期": "2021-07-30"},
+    ])
+    context = build_business_context({
+        "company_profile": profile,
+        "business_composition": composition,
+        "industry_change": industry_change,
+    })
+    assert context["company_profile"]["main_business"].startswith("各类电子设备")
+    assert context["business_composition"]["report_date"] == "2025-12-31"
+    assert context["business_composition"]["by_industry"][0]["name"] == "云计算"
+    assert context["business_composition"]["by_product"][0]["name"] == "3C电子产品"
+    assert context["business_composition"]["by_region"][0]["name"] == "中国大陆及其他"
+    assert context["sw_industry"]["standard"] == "申银万国行业分类标准"
+    assert context["sw_industry"]["sub_industry"] == "消费电子零部件及组装"
+
+
+def test_business_context_missing_data_is_info_only() -> None:
+    items = inspect_business_context_quality({"company_profile": {}, "sw_industry": {}, "business_composition": {"by_industry": [], "by_product": []}})
+    assert {item["level"] for item in items} == {"info"}
+    assert summarize_quality_status(items) == "ok"
+
+
 def test_failure_report_omits_score_rating_and_trade_meaning(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(report_generator, "OUTPUT_DIR", tmp_path)
     path = report_generator.generate_data_failure_report({
@@ -212,6 +248,15 @@ def test_warning_report_marks_degraded_analysis(tmp_path, monkeypatch: pytest.Mo
         "risk_flags": [],
         "announcements": [],
         "llm_results": {},
+        "business_context": {
+            "company_profile": {"main_business": "各类电子设备产品的设计、研发、制造与销售业务。", "base_industry": "计算机、通信和其他电子设备制造业"},
+            "sw_industry": {"standard": "申银万国行业分类标准", "sector": "电子", "sub_sector": "消费电子", "industry": "消费电子零部件及组装", "sub_industry": "消费电子零部件及组装"},
+            "business_composition": {
+                "report_date": "2025-12-31",
+                "by_industry": [{"name": "云计算", "revenue": 602678703000, "revenue_ratio": 0.667502, "gross_margin": 0.0573}],
+                "by_product": [{"name": "3C电子产品", "revenue": 901224002000, "revenue_ratio": 0.998158, "gross_margin": 0.069357}],
+            },
+        },
         "data_quality_status": "warning",
         "data_quality_warnings": [{"level": "warning", "stage": "raw_fetch", "source": "market_data", "message": "估值字段缺失"}],
     })
@@ -219,6 +264,10 @@ def test_warning_report_marks_degraded_analysis(tmp_path, monkeypatch: pytest.Mo
     assert "分析状态：降级分析" in content
     assert "数据质量状态：warning" in content
     assert "估值字段缺失" in content
+    assert "## 行业" in content
+    assert "主营业务：各类电子设备产品的设计、研发、制造与销售业务。" in content
+    assert "云计算" in content
+    assert "3C电子产品" in content
 
 
 def test_main_raw_fatal_generates_failure_report_without_scoring(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -306,6 +355,64 @@ def test_qwen_audit_receives_market_data_and_quality_warnings(monkeypatch: pytes
     assert "market_data" in captured["prompt"]
     assert "贵州茅台" in captured["prompt"]
     assert "data_quality_warnings" in captured["prompt"]
+
+
+def test_llm_pipeline_omits_business_context_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def fake_deepseek(prompt: str) -> dict[str, str]:
+        captured["deepseek_prompt"] = prompt
+        return {"status": "ok", "content": "deepseek report"}
+
+    def fake_qwen(prompt: str) -> dict[str, str]:
+        captured["qwen_prompt"] = prompt
+        return {"status": "ok", "content": "qwen audit"}
+
+    monkeypatch.setattr(llm_pipeline, "call_deepseek", fake_deepseek)
+    monkeypatch.setattr(llm_pipeline, "call_qwen", fake_qwen)
+    context = {
+        "stock_info": {"股票代码": "601138"},
+        "market_data": {"股票简称": "工业富联"},
+        "financial_factors": {},
+        "financial_score": {},
+        "risk_flags": [],
+        "announcements": [],
+        "data_quality_warnings": [],
+        "business_context": {"company_profile": {"main_business": "should_not_be_sent"}},
+    }
+    llm_pipeline.run_llm_pipeline(context)
+    assert "business_context" not in captured["qwen_prompt"]
+    assert "should_not_be_sent" not in captured["deepseek_prompt"]
+    assert "should_not_be_sent" not in captured["qwen_prompt"]
+
+
+def test_llm_pipeline_can_include_business_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def fake_deepseek(prompt: str) -> dict[str, str]:
+        captured["deepseek_prompt"] = prompt
+        return {"status": "ok", "content": "deepseek report"}
+
+    def fake_qwen(prompt: str) -> dict[str, str]:
+        captured["qwen_prompt"] = prompt
+        return {"status": "ok", "content": "qwen audit"}
+
+    monkeypatch.setattr(llm_pipeline, "call_deepseek", fake_deepseek)
+    monkeypatch.setattr(llm_pipeline, "call_qwen", fake_qwen)
+    context = {
+        "stock_info": {"股票代码": "601138"},
+        "market_data": {"股票简称": "工业富联"},
+        "financial_factors": {},
+        "financial_score": {},
+        "risk_flags": [],
+        "announcements": [],
+        "data_quality_warnings": [],
+        "business_context": {"company_profile": {"main_business": "should_be_sent"}},
+    }
+    llm_pipeline.run_llm_pipeline(context, include_business_context=True)
+    assert "主营业务与收入构成" in captured["deepseek_prompt"]
+    assert "should_be_sent" in captured["deepseek_prompt"]
+    assert "business_context" in captured["qwen_prompt"]
 
 
 def test_anti_dependency_mode_records_human_judgment_before_qwen(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

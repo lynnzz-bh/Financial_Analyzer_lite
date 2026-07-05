@@ -12,6 +12,7 @@ from src.anti_dependency.anti_dependency_mode import run_anti_dependency_mode
 from src.data_cleaner.financial_cleaner import clean_financial_reports
 from src.data_fetcher.akshare_fetcher import fetch_financial_reports, fetch_stock_info
 from src.data_fetcher.announcement_fetcher import fetch_announcements
+from src.data_fetcher.business_fetcher import build_business_context, fetch_business_source_tables
 from src.data_fetcher.market_fetcher import fetch_market_data
 from src.factors.financial_factors import compute_financial_factors
 from src.factors.risk_flags import generate_risk_flags
@@ -19,7 +20,7 @@ from src.llm.llm_pipeline import run_llm_pipeline
 from src.report.report_generator import generate_data_failure_report, generate_markdown_report
 from src.scoring.financial_score import score_financials
 from src.utils.akshare_patch import AksharePatchRequiredError
-from src.utils.data_quality import inspect_cleaned_reports_quality, inspect_raw_fetch_quality, summarize_quality_status
+from src.utils.data_quality import inspect_business_context_quality, inspect_cleaned_reports_quality, inspect_raw_fetch_quality, summarize_quality_status
 from src.utils.date_utils import parse_analysis_date, validate_stock_code
 from src.utils.logger import get_logger
 from src.utils.storage import save_dataframe, save_json
@@ -124,6 +125,14 @@ def main() -> int:
             logger.error("数据质量 fatal，已生成失败报告：%s", report_path)
             cleanup_output_if_requested(KEEP_LATEST_OUTPUT_ONLY, code)
             return 0
+        business_source_tables = fetch_business_source_tables(code, analysis_date)
+        for table_name, df in business_source_tables.items():
+            if isinstance(df, pd.DataFrame):
+                save_dataframe(df, RAW_DIR / f"{code}_{table_name}.csv")
+        business_context = build_business_context(business_source_tables)
+        data_quality_warnings.extend(inspect_business_context_quality(business_context))
+        save_json(business_context, PROCESSED_DIR / f"{code}_business_context.json")
+        data_quality_status = summarize_quality_status(data_quality_warnings)
         if args.anti_dependency:
             save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
             record = run_anti_dependency_mode(
@@ -159,6 +168,7 @@ def main() -> int:
             "announcements": announcements,
             "data_quality_warnings": data_quality_warnings,
             "data_quality_status": data_quality_status,
+            "business_context": business_context,
         }
         context["llm_results"] = run_llm_pipeline(context)
         save_json(context["llm_results"], PROCESSED_DIR / f"{code}_llm_results.json")

@@ -7,10 +7,11 @@ from src.llm.prompts import DEEPSEEK_FINANCIAL_ANALYSIS_PROMPT, QWEN_AUDIT_PROMP
 from src.llm.qwen_client import call_qwen
 
 
-def run_llm_pipeline(context: dict[str, Any]) -> dict[str, dict[str, str]]:
+def run_llm_pipeline(context: dict[str, Any], include_business_context: bool = False) -> dict[str, dict[str, str]]:
     announcement_summary = _announcement_summary(context.get("announcements", []))
     deepseek_prompt = DEEPSEEK_FINANCIAL_ANALYSIS_PROMPT.format(
         stock_info=_to_json(context.get("stock_info", {})),
+        business_context_section=_business_context_section(context, include_business_context),
         analysis_date=context.get("analysis_date"),
         financial_factors=_to_json(context.get("financial_factors", {})),
         financial_score=_to_json(context.get("financial_score", {})),
@@ -20,19 +21,28 @@ def run_llm_pipeline(context: dict[str, Any]) -> dict[str, dict[str, str]]:
         market_data=_to_json(context.get("market_data", {})),
     )
     deepseek_result = call_deepseek(deepseek_prompt)
+    raw_data_summary = {
+        "stock_info": context.get("stock_info", {}),
+        "market_data": context.get("market_data", {}),
+        "financial_factors": context.get("financial_factors", {}),
+        "financial_score": context.get("financial_score", {}),
+        "data_quality_warnings": context.get("data_quality_warnings", []),
+    }
+    if include_business_context:
+        raw_data_summary["business_context"] = context.get("business_context", {})
     qwen_prompt = QWEN_AUDIT_PROMPT.format(
-        raw_data_summary=_to_json({
-            "stock_info": context.get("stock_info", {}),
-            "market_data": context.get("market_data", {}),
-            "financial_factors": context.get("financial_factors", {}),
-            "financial_score": context.get("financial_score", {}),
-            "data_quality_warnings": context.get("data_quality_warnings", []),
-        }),
+        raw_data_summary=_to_json(raw_data_summary),
         deepseek_report=deepseek_result["content"],
         risk_flags=_to_json(context.get("risk_flags", [])),
         announcement_summary=announcement_summary,
     )
     return {"deepseek": deepseek_result, "qwen": call_qwen(qwen_prompt)}
+
+
+def _business_context_section(context: dict[str, Any], include_business_context: bool) -> str:
+    if not include_business_context:
+        return ""
+    return f"【主营业务与收入构成】{_to_json(context.get('business_context', {}))}"
 
 
 def _announcement_summary(announcements: list[dict[str, Any]]) -> str:

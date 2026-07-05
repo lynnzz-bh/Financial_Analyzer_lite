@@ -5,6 +5,7 @@ DEEPSEEK_FINANCIAL_ANALYSIS_PROMPT = """你是一个严谨的 A 股财务分析�
 
 请根据以下信息生成财务分析：
 【股票信息】{stock_info}
+{business_context_section}
 【分析日期】{analysis_date}
 【核心财务指标】{financial_factors}
 【财务评分】{financial_score}

@@ -35,6 +35,7 @@ def _build_report(context: dict[str, Any], code: str, name: str, rating: str) ->
     lines = [
         f"# {code} {name} 财务分析简报", "", f"版本：{PROJECT_VERSION}", f"分析日期：{context.get('analysis_date')}", f"分析目标：{context.get('mode')}", f"分析状态：{_analysis_status_label(data_quality_status)}", f"数据质量状态：{data_quality_status}", f"数据可信度：{score.get('score_confidence', 'unknown')}", f"综合评分：{score.get('total_score', 'missing')}/100", f"财务评级：{rating}",
         "", "## 数据质量警告", "", _data_quality_lines(context.get("data_quality_warnings", [])),
+        "", "## 行业", "", _business_context_lines(context.get("business_context", {})),
         "", "## 一、核心结论", "", llm.get("deepseek", {}).get("content", "LLM 分析不可用。"),
         "", "## 二、财务评分", "", "| 维度 | 分数 | 解释 |", "| --- | ---: | --- |",
         f"| 盈利能力 | {score.get('profitability_score', 0)}/20 | Python 规则评分 |",
@@ -89,6 +90,49 @@ def _factor_lines(factors: dict[str, Any], keys: list[str]) -> str:
     return "\n".join(f"- {key}：{_fmt(factors.get(key))}" for key in keys)
 
 
+def _business_context_lines(business_context: dict[str, Any]) -> str:
+    if not business_context:
+        return "无可用行业与主营构成数据。"
+    profile = business_context.get("company_profile", {})
+    sw_industry = business_context.get("sw_industry", {})
+    composition = business_context.get("business_composition", {})
+    lines = [
+        f"- 主营业务：{profile.get('main_business') or 'missing'}",
+        f"- 基础行业：{profile.get('base_industry') or 'missing'}",
+        f"- 申万行业：{_sw_industry_line(sw_industry)}",
+        f"- 主营构成报告期：{composition.get('report_date') or 'missing'}",
+        "",
+        "### 行业收入构成",
+        "",
+        _composition_table(composition.get("by_industry", [])),
+        "",
+        "### 产品收入构成",
+        "",
+        _composition_table(composition.get("by_product", [])),
+    ]
+    return "\n".join(lines)
+
+
+def _sw_industry_line(sw_industry: dict[str, Any]) -> str:
+    if not sw_industry:
+        return "missing"
+    chain = [sw_industry.get(key) for key in ("sector", "sub_sector", "industry", "sub_industry") if sw_industry.get(key)]
+    label = " / ".join(chain) if chain else "missing"
+    standard = sw_industry.get("standard") or "unknown standard"
+    return f"{label}（{standard}）"
+
+
+def _composition_table(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "无可用构成数据。"
+    lines = ["| 构成 | 主营收入 | 收入比例 | 毛利率 |", "| --- | ---: | ---: | ---: |"]
+    for row in rows:
+        lines.append(
+            f"| {row.get('name') or 'missing'} | {_fmt_yi_yuan(row.get('revenue'))} | {_fmt_percent(row.get('revenue_ratio'))} | {_fmt_percent(row.get('gross_margin'))} |"
+        )
+    return "\n".join(lines)
+
+
 def _announcement_lines(announcements: list[dict[str, Any]]) -> str:
     if not announcements:
         return "无可用公告。"
@@ -111,6 +155,24 @@ def _fmt(value: Any) -> str:
     if value is None:
         return "missing"
     return f"{value:.4f}" if isinstance(value, float) else str(value)
+
+
+def _fmt_percent(value: Any) -> str:
+    if value is None:
+        return "missing"
+    try:
+        return f"{float(value) * 100:.2f}%"
+    except (TypeError, ValueError):
+        return "missing"
+
+
+def _fmt_yi_yuan(value: Any) -> str:
+    if value is None:
+        return "missing"
+    try:
+        return f"{float(value) / 100000000:.2f}亿元"
+    except (TypeError, ValueError):
+        return "missing"
 
 
 def _rating(total_score: Any) -> str:
