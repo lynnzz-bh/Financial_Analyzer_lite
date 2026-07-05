@@ -13,6 +13,8 @@ financial_factors.py 使用 Python 规则计算盈利、成长、现金流、资
 
 metric_provenance 会根据 report_period 为 income_statement 和 balance_sheet 来源标记年度、半年度或季度口径；报告中的来源摘要会展示类似“年度income_statement”“季度balance_sheet”的前缀，避免把不同期间口径混读。
 
+估值指标中 PE 动态与 PE TTM 分开处理：东方财富/AKShare 的 `市盈率-动态` 保存为 PE 动态；真正的 PE TTM 由总市值除以 TTM 归母净利润计算。PB 也分为行情源字段和项目计算字段：东方财富/AKShare 市净率保存为 PB 行情源，主 PB 由总市值除以最新资产负债表股东权益计算。扣非口径另以“市值/扣非净利润”展示。
+
 risk_flags.py 根据指标、报表和公告标题生成风险红旗。financial_score.py 按五个维度生成 100 分制财务评分和可信度。
 
 llm_pipeline.py 在 API Key 已配置时调用 DeepSeek 生成解释性财务分析，再调用 Qwen 做事实、逻辑和反方审核。未配置 API Key 时，系统不伪造模型输出，而是写入明确的占位状态。

@@ -48,12 +48,14 @@ def compute_financial_factors(cleaned_reports: dict[str, list[dict[str, Any]]], 
         "存货/营业收入": _safe_div(latest_balance.get("存货"), latest_income.get("营业收入")),
         "商誉/净资产": _safe_div(latest_balance.get("商誉"), latest_balance.get("股东权益")),
         "在建工程/固定资产": _safe_div(latest_balance.get("在建工程"), latest_balance.get("固定资产")),
-        "PE TTM": _to_float(market_data.get("PE TTM")),
-        "PB": _to_float(market_data.get("PB")),
+        "PE 动态": _to_float(market_data.get("PE 动态")),
+        "PE TTM": _safe_div(_to_float(market_data.get("总市值")), _ttm(income_rows, "归母净利润")),
+        "PB 行情源": _to_float(market_data.get("PB 行情源")),
+        "PB": _safe_div(_to_float(market_data.get("总市值")), latest_balance.get("股东权益")),
         "PS": _to_float(market_data.get("PS")),
         # PEG 采用财务分析口径：PE TTM / TTM 扣非归母净利润同比。
         # 东方财富等行情页可能使用最近年报归母净利润同比，因此展示值可能不同。
-        "PEG": _safe_div(_to_float(market_data.get("PE TTM")), _pct_to_number(_ttm_yoy(income_rows, "扣非归母净利润"))),
+        "PEG": _safe_div(_safe_div(_to_float(market_data.get("总市值")), _ttm(income_rows, "归母净利润")), _pct_to_number(_ttm_yoy(income_rows, "扣非归母净利润"))),
         "市值/扣非净利润": _safe_div(_to_float(market_data.get("总市值")), _ttm(income_rows, "扣非归母净利润")),
         "市值/经营现金流": _safe_div(_to_float(market_data.get("总市值")), _ttm(cash_rows, "经营活动现金流净额")),
     }

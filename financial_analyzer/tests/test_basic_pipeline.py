@@ -18,6 +18,7 @@ from src.data_fetcher.astock_data_provider import (
     parse_tencent_quote_payload,
 )
 from src.data_fetcher.business_fetcher import build_business_context
+from src.data_fetcher.market_fetcher import _map_market_row
 from src.factors.financial_factors import compute_financial_factors
 from src.factors.metric_registry import META_FACTOR_KEYS, build_metric_provenance, registered_metric_names
 from src.llm import llm_pipeline
@@ -124,6 +125,14 @@ def test_astock_fund_flow_parser() -> None:
     assert rows[0]["date"] == "2026-06-24"
     assert rows[0]["main_net"] == 1000
     assert rows[1]["main_net"] is None
+
+
+def test_market_row_keeps_dynamic_pe_separate_from_ttm_pe() -> None:
+    market = _map_market_row({"名称": "四方股份", "最新价": 58, "总市值": 48320119000, "市盈率-动态": 44.63, "市净率": 10.57}, "601126")
+    assert market["PE 动态"] == 44.63
+    assert market["PE TTM"] is None
+    assert market["PB 行情源"] == 10.57
+    assert market["PB"] is None
 
 
 def test_money_normalized_to_yuan() -> None:
@@ -579,6 +588,23 @@ def test_metric_registry_matches_financial_factor_fields() -> None:
     assert registered_metric_names() <= factor_names
 
 
+def test_pb_is_computed_from_market_cap_and_latest_equity() -> None:
+    reports = {
+        "income_statement": [],
+        "balance_sheet": [
+            {"report_period": "2025A", "publish_date": "2026-03-24", "股东权益": 4896176437.38},
+            {"report_period": "2026Q1", "publish_date": "2026-04-30", "股东权益": 5171824698.32},
+        ],
+        "cash_flow": [],
+    }
+    factors = compute_financial_factors(reports, {"总市值": 48320119000.0, "PB 行情源": 10.57})
+    provenance = build_metric_provenance(reports, {"总市值": 48320119000.0, "PB 行情源": 10.57}, factors)
+    assert factors["PB 行情源"] == pytest.approx(10.57)
+    assert factors["PB"] == pytest.approx(48320119000.0 / 5171824698.32)
+    assert provenance["metrics"]["PB"]["sources"][0]["report"] == "market_data"
+    assert provenance["metrics"]["PB"]["sources"][1]["period_prefix"] == "季度"
+
+
 def test_annual_and_quarterly_roe_are_separate() -> None:
     reports = {
         "income_statement": [
@@ -621,8 +647,8 @@ def test_metric_provenance_marks_half_year_sources() -> None:
 def test_metric_provenance_schema_snapshot() -> None:
     reports = {
         "income_statement": [
-            {"report_period": "2024A", "publish_date": "2025-04-01", "毛利": 20, "营业收入": 80, "营业成本": 60, "扣非归母净利润": 8},
-            {"report_period": "2025A", "publish_date": "2026-04-01", "毛利": 30, "营业收入": 100, "营业成本": 70, "扣非归母净利润": 12},
+            {"report_period": "2024A", "publish_date": "2025-04-01", "毛利": 20, "营业收入": 80, "营业成本": 60, "归母净利润": 8, "扣非归母净利润": 8},
+            {"report_period": "2025A", "publish_date": "2026-04-01", "毛利": 30, "营业收入": 100, "营业成本": 70, "归母净利润": 12, "扣非归母净利润": 12},
         ],
         "balance_sheet": [],
         "cash_flow": [],
@@ -654,12 +680,22 @@ def test_metric_provenance_schema_snapshot() -> None:
     assert pe_ttm["sources"] == [
         {
             "report": "market_data",
-            "fields": ["PE TTM"],
-            "available_fields": ["PE TTM"],
+            "fields": ["总市值"],
+            "available_fields": ["总市值"],
             "report_period": None,
             "publish_date": None,
             "unit": "market_data",
-        }
+        },
+        {
+            "report": "income_statement",
+            "fields": ["归母净利润"],
+            "available_fields": ["归母净利润"],
+            "report_period": "2025A",
+            "period_type": "annual",
+            "period_prefix": "年度",
+            "publish_date": "2026-04-01",
+            "unit": "元",
+        },
     ]
 
 
@@ -690,11 +726,11 @@ def test_yoy_uses_same_report_period_last_year() -> None:
 def test_valuation_uses_ttm_denominators() -> None:
     reports = {
         "income_statement": [
-            {"report_period": "2023Q1", "扣非归母净利润": 5, "营业收入": 80},
-            {"report_period": "2023A", "扣非归母净利润": 80, "营业收入": 800},
-            {"report_period": "2024Q1", "扣非归母净利润": 10, "营业收入": 100},
-            {"report_period": "2024A", "扣非归母净利润": 100, "营业收入": 1000},
-            {"report_period": "2025Q1", "扣非归母净利润": 20, "营业收入": 140},
+            {"report_period": "2023Q1", "归母净利润": 5, "扣非归母净利润": 5, "营业收入": 80},
+            {"report_period": "2023A", "归母净利润": 80, "扣非归母净利润": 80, "营业收入": 800},
+            {"report_period": "2024Q1", "归母净利润": 10, "扣非归母净利润": 10, "营业收入": 100},
+            {"report_period": "2024A", "归母净利润": 100, "扣非归母净利润": 100, "营业收入": 1000},
+            {"report_period": "2025Q1", "归母净利润": 20, "扣非归母净利润": 20, "营业收入": 140},
         ],
         "balance_sheet": [],
         "cash_flow": [
@@ -705,6 +741,7 @@ def test_valuation_uses_ttm_denominators() -> None:
     }
     factors = compute_financial_factors(reports, {"PE TTM": 20, "总市值": 1100})
     assert factors["近四季度滚动扣非净利润"] == pytest.approx(110)
+    assert factors["PE TTM"] == pytest.approx(10)
     assert factors["市值/扣非净利润"] == pytest.approx(10)
     assert factors["市值/经营现金流"] == pytest.approx(11)
-    assert factors["PEG"] == pytest.approx(20 / ((110 / 85 - 1) * 100))
+    assert factors["PEG"] == pytest.approx(10 / ((110 / 85 - 1) * 100))
