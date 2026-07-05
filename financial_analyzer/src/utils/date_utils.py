@@ -3,6 +3,8 @@
 from datetime import date, datetime
 import re
 
+SUPPORTED_MAIN_BOARD_PREFIXES = ("600", "601", "603", "605", "000", "001", "002")
+
 
 def parse_analysis_date(value: str) -> date:
     try:
@@ -15,7 +17,16 @@ def validate_stock_code(code: str) -> str:
     clean_code = code.strip()
     if not re.fullmatch(r"\d{6}", clean_code):
         raise ValueError(f"股票代码必须为 6 位数字：{code}")
+    if not is_supported_main_board_stock(clean_code):
+        raise ValueError(
+            f"暂不支持该股票代码：{code}。当前仅支持 A 股主板普通股票，"
+            "代码需以 600/601/603/605/000/001/002 开头。"
+        )
     return clean_code
+
+
+def is_supported_main_board_stock(code: str) -> bool:
+    return any(code.startswith(prefix) for prefix in SUPPORTED_MAIN_BOARD_PREFIXES)
 
 
 def normalize_report_period(value: object) -> str | None:

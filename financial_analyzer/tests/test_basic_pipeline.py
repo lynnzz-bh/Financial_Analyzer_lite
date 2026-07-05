@@ -26,6 +26,8 @@ from src.utils.date_utils import parse_analysis_date, validate_stock_code
 def test_date_and_code_validation() -> None:
     assert parse_analysis_date("2026-06-24") == date(2026, 6, 24)
     assert validate_stock_code("600519") == "600519"
+    assert validate_stock_code("000001") == "000001"
+    assert validate_stock_code("002415") == "002415"
     assert normalize_stock_code("SH600519") == "600519"
     assert normalize_stock_code("000001.SZ") == "000001"
     assert market_prefix("600519") == "sh"
@@ -35,6 +37,9 @@ def test_date_and_code_validation() -> None:
     assert to_eastmoney_symbol("830799") == "BJ830799"
     with pytest.raises(ValueError):
         validate_stock_code("abc")
+    for unsupported_code in ("300750", "688981", "830799", "400001"):
+        with pytest.raises(ValueError, match="当前仅支持 A 股主板普通股票"):
+            validate_stock_code(unsupported_code)
     with pytest.raises(ValueError):
         normalize_stock_code("abc")
 
