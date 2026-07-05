@@ -19,7 +19,7 @@ from src.factors.financial_factors import compute_financial_factors
 from src.llm import llm_pipeline
 from src.factors.risk_flags import generate_risk_flags
 from src.scoring.financial_score import score_financials
-from src.utils.data_quality import inspect_cleaned_reports_quality, inspect_raw_fetch_quality
+from src.utils.data_quality import inspect_cleaned_reports_quality, inspect_raw_fetch_quality, summarize_quality_status
 from src.utils.date_utils import parse_analysis_date, validate_stock_code
 
 
@@ -151,13 +151,30 @@ def test_data_quality_warnings_for_empty_fetches() -> None:
     assert any(item["source"] == "stock_info" for item in raw_warnings)
     assert any(item["source"] == "income_statement" for item in raw_warnings)
     assert any(item["source"] == "market_data" for item in raw_warnings)
+    assert any(item["level"] == "fatal" and item["source"] == "financial_reports" for item in raw_warnings)
+    assert summarize_quality_status(raw_warnings) == "fatal"
 
     cleaned_warnings = inspect_cleaned_reports_quality({
         "income_statement": [],
         "balance_sheet": [],
         "cash_flow": [],
     })
-    assert len(cleaned_warnings) == 3
+    assert len(cleaned_warnings) == 4
+    assert summarize_quality_status(cleaned_warnings) == "fatal"
+
+
+def test_data_quality_warning_for_missing_disclosure_date() -> None:
+    warnings = inspect_cleaned_reports_quality({
+        "income_statement": [{"report_period": "2025A", "publish_date": None, "营业收入": 100}],
+        "balance_sheet": [{"report_period": "2025A", "publish_date": "2026-04-01", "总资产": 300}],
+        "cash_flow": [{"report_period": "2025A", "publish_date": "2026-04-01", "经营活动现金流净额": 20}],
+    })
+    assert any(item["level"] == "warning" and "披露日期未知" in item["message"] for item in warnings)
+    assert summarize_quality_status(warnings) == "warning"
+
+
+def test_data_quality_status_ok_without_warnings() -> None:
+    assert summarize_quality_status([]) == "ok"
 
 
 def test_cleanup_old_output_files_keeps_latest_date(tmp_path) -> None:
