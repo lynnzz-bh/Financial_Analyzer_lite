@@ -1,4 +1,4 @@
-# Financial Analyzer 0.5.2
+# Financial Analyzer 0.5.3
 
 A 股单股财务分析工作流系统。输入股票代码、分析日期和分析目标后，系统抓取 AKShare 数据、清洗财报、计算指标、生成风险红旗和评分，并输出 Markdown 简报。
 
@@ -44,6 +44,12 @@ python main.py --code 600519 --date 2026-06-24 --mode "买入前检查" --anti-d
 - 审计信息包括标准字段到原始字段别名的映射、抓取函数、raw/processed 文件路径、分析日期和生成时间。
 - 审计信息只用于复核，不参与指标计算、评分或风险红旗判断；缺失时标记为 `missing`，不阻断报告。
 - `data/output` 中历史版本生成的旧报告不会自动重写，后续人工重新运行程序时会自然更新。
+
+## Registry 计算契约试运行
+
+- `metric_registry.py` 在文字口径说明之外，增加机器可读计算契约字段，用于声明指标的计算类型、字段依赖和 helper 归属。
+- 新增契约静态校验与 shadow validation，用于测试 registry 声明是否与 `financial_factors.py` 输出保持一致。
+- 0.5.3 仍不让 registry 参与主计算，不替换 `compute_financial_factors()`，也不改变评分、风险红旗或报告结论。
 
 ## 数据源补充
 

@@ -1,5 +1,6 @@
 """本模块覆盖项目最基础的纯 Python 逻辑，包括日期校验、元单位换算、指标计算、风险红旗和评分可信度，避免依赖外部接口。"""
 
+from copy import deepcopy
 from datetime import date
 import json
 import sys
@@ -20,7 +21,15 @@ from src.data_fetcher.astock_data_provider import (
 from src.data_fetcher.business_fetcher import build_business_context
 from src.data_fetcher.market_fetcher import _map_market_row
 from src.factors.financial_factors import compute_financial_factors, enrich_market_data_with_report_valuations
-from src.factors.metric_registry import META_FACTOR_KEYS, build_metric_provenance, registered_metric_names
+from src.factors.metric_registry import (
+    ALLOWED_OPERATIONS,
+    META_FACTOR_KEYS,
+    METRIC_REGISTRY,
+    build_metric_provenance,
+    registered_metric_names,
+    shadow_validate_registry_against_factors,
+    validate_metric_contracts,
+)
 from src.llm import llm_pipeline
 from src.factors.risk_flags import generate_risk_flags
 from src.report import report_generator
@@ -662,6 +671,32 @@ def test_metric_registry_matches_financial_factor_fields() -> None:
     assert registered_metric_names() <= factor_names
 
 
+def test_metric_registry_contract_metadata_is_complete() -> None:
+    for metric_name, definition in METRIC_REGISTRY.items():
+        assert definition["expected_factor_key"] == metric_name
+        assert definition["operation"] in ALLOWED_OPERATIONS
+        assert "numerator_fields" in definition
+        assert "denominator_fields" in definition
+        assert "helper_name" in definition
+
+
+def test_metric_contract_static_validation_passes_for_registry() -> None:
+    assert validate_metric_contracts() == []
+
+
+def test_metric_contract_static_validation_reports_missing_and_invalid_fields() -> None:
+    registry = deepcopy(METRIC_REGISTRY)
+    registry["毛利率"].pop("operation")
+    registry["净利率"]["numerator_fields"] = {}
+    registry["资产负债率"]["denominator_fields"] = {}
+    registry["ROA"]["helper_name"] = None
+    issues = validate_metric_contracts(registry)
+    assert any(item["metric_name"] == "毛利率" and item["field"] == "operation" and item["issue_type"] == "missing_field" for item in issues)
+    assert any(item["metric_name"] == "净利率" and item["field"] == "numerator_fields" and item["issue_type"] == "missing_formula_fields" for item in issues)
+    assert any(item["metric_name"] == "资产负债率" and item["field"] == "denominator_fields" and item["issue_type"] == "missing_formula_fields" for item in issues)
+    assert any(item["metric_name"] == "ROA" and item["field"] == "helper_name" and item["issue_type"] == "missing_helper" for item in issues)
+
+
 def test_pb_is_computed_from_market_cap_and_latest_equity() -> None:
     reports = {
         "income_statement": [],
@@ -742,6 +777,75 @@ def test_annual_and_quarterly_roe_are_separate() -> None:
     assert provenance["metrics"]["单季度年化ROE"]["sources"][0]["report_period"] == "2025Q1"
     assert provenance["metrics"]["单季度年化ROE"]["sources"][1]["report_period"] == "2025Q1"
     assert provenance["metrics"]["单季度年化ROE"]["sources"][2]["report_period"] == "2024A"
+
+
+def test_shadow_validation_passes_for_low_risk_contract_metrics() -> None:
+    reports = {
+        "income_statement": [
+            {"report_period": "2024A", "营业收入": 100, "营业成本": 70, "毛利": 30, "归母净利润": 10, "扣非归母净利润": 8, "研发费用": 2},
+            {"report_period": "2025A", "营业收入": 150, "营业成本": 90, "毛利": 60, "归母净利润": 30, "扣非归母净利润": 24, "研发费用": 6},
+        ],
+        "balance_sheet": [
+            {"report_period": "2024A", "总资产": 100, "总负债": 30, "股东权益": 70, "商誉": 7, "固定资产": 40, "在建工程": 4},
+            {"report_period": "2025A", "总资产": 200, "总负债": 80, "股东权益": 120, "商誉": 12, "固定资产": 60, "在建工程": 6},
+        ],
+        "cash_flow": [
+            {"report_period": "2025A", "经营活动现金流净额": 45, "销售商品、提供劳务收到的现金": 140, "购建固定资产、无形资产和其他长期资产支付的现金": 15},
+        ],
+    }
+    market_data = {"PE 动态": 20, "行情源PEG": 3, "PB 行情源": 4, "行情源PS": 5, "总市值": 1000}
+    factors = compute_financial_factors(reports, market_data)
+    before = deepcopy(factors)
+    issues = shadow_validate_registry_against_factors(reports, market_data, factors)
+    assert issues == []
+    assert factors == before
+
+
+def test_shadow_validation_reports_factor_value_mismatch_without_fixing_it() -> None:
+    reports = {
+        "income_statement": [{"report_period": "2025A", "营业收入": 100, "营业成本": 70, "毛利": 30, "归母净利润": 10}],
+        "balance_sheet": [{"report_period": "2025A", "总资产": 200, "总负债": 80}],
+        "cash_flow": [],
+    }
+    factors = compute_financial_factors(reports, {})
+    factors["毛利率"] = 0.99
+    issues = shadow_validate_registry_against_factors(reports, {}, factors)
+    assert any(item["metric_name"] == "毛利率" and item["issue_type"] == "value_mismatch" and item["registry_value"] == pytest.approx(0.3) for item in issues)
+    assert factors["毛利率"] == 0.99
+
+
+def test_shadow_validation_skips_complex_helpers_as_non_failures() -> None:
+    reports = {
+        "income_statement": [{"report_period": "2025A", "归母净利润": 10}],
+        "balance_sheet": [{"report_period": "2025A", "总资产": 200}],
+        "cash_flow": [],
+    }
+    factors = compute_financial_factors(reports, {})
+    factors["ROA"] = 12345
+    issues = shadow_validate_registry_against_factors(reports, {}, factors)
+    assert not any(item["metric_name"] == "ROA" for item in issues)
+
+
+def test_registry_contract_and_shadow_validation_integrate_with_factor_pipeline() -> None:
+    reports = {
+        "income_statement": [
+            {"report_period": "2024A", "营业收入": 100, "营业成本": 70, "毛利": 30, "归母净利润": 10, "扣非归母净利润": 8, "研发费用": 2},
+            {"report_period": "2025A", "营业收入": 150, "营业成本": 90, "毛利": 60, "归母净利润": 30, "扣非归母净利润": 24, "研发费用": 6},
+        ],
+        "balance_sheet": [
+            {"report_period": "2024A", "总资产": 100, "总负债": 30, "股东权益": 70, "商誉": 7, "固定资产": 40, "在建工程": 4, "合同负债": 5, "应收账款": 20, "存货": 30},
+            {"report_period": "2025A", "总资产": 200, "总负债": 80, "股东权益": 120, "商誉": 12, "固定资产": 60, "在建工程": 6, "合同负债": 10, "应收账款": 25, "存货": 45},
+        ],
+        "cash_flow": [
+            {"report_period": "2025A", "经营活动现金流净额": 45, "销售商品、提供劳务收到的现金": 140, "购建固定资产、无形资产和其他长期资产支付的现金": 15},
+        ],
+    }
+    market_data = {"PE 动态": 20, "行情源PEG": 3, "PB 行情源": 4, "行情源PS": 5, "总市值": 1000}
+    factors = compute_financial_factors(reports, market_data)
+    assert validate_metric_contracts() == []
+    assert shadow_validate_registry_against_factors(reports, market_data, factors) == []
+    provenance = build_metric_provenance(reports, market_data, factors)
+    assert provenance["schema_version"] == "metric_provenance.v1.1"
 
 
 def test_metric_provenance_marks_half_year_sources() -> None:

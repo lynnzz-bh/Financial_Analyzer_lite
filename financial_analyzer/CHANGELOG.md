@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.3
+
+- registry 新增机器可读计算契约元信息，覆盖 `operation`、`numerator_fields`、`denominator_fields`、`helper_name` 和 `expected_factor_key`。
+- 新增 `validate_metric_contracts()` 静态校验，检查 registry 契约字段完整性、operation 枚举和 helper 声明。
+- 新增 `shadow_validate_registry_against_factors()` 只读试运行校验，对低风险指标复算并报告差异，不修正 factors。
+- 将 0.5.3 测试拆为契约元信息、静态校验、shadow validation 和组装测试，确保全部通过后再整体验收。
+- 本版本不替换 `compute_financial_factors()`，不改变评分、风险红旗、报告判断，也不处理历史 `data/output` 报告。
+
 ## 0.5.2
 
 - `metric_provenance.json` schema 升级为 `metric_provenance.v1.1`，顶层新增 `source_audit`。

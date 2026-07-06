@@ -21,12 +21,18 @@ class MetricDefinition(TypedDict):
     unit: str
     is_ttm: bool
     period_note: str
+    operation: str
+    numerator_fields: dict[str, list[str]]
+    denominator_fields: dict[str, list[str]]
+    helper_name: str | None
+    expected_factor_key: str
 
 
 SCHEMA_VERSION = "metric_provenance.v1.1"
 REGISTRY_MODE = "description_only"
 CALCULATION_SOURCE = "src.factors.financial_factors.compute_financial_factors"
 META_FACTOR_KEYS = {"指标缺失数量", "指标总数量"}
+ALLOWED_OPERATIONS = {"direct_market", "simple_ratio", "yoy", "ttm", "composite_helper"}
 
 
 METRIC_REGISTRY: dict[str, MetricDefinition] = {
@@ -463,6 +469,87 @@ METRIC_REGISTRY: dict[str, MetricDefinition] = {
 }
 
 
+_SIMPLE_RATIO_CONTRACTS: dict[str, tuple[dict[str, list[str]], dict[str, list[str]]]] = {
+    "毛利率": ({"income_statement": ["毛利", "营业收入", "营业成本"]}, {"income_statement": ["营业收入"]}),
+    "净利率": ({"income_statement": ["归母净利润"]}, {"income_statement": ["营业收入"]}),
+    "扣非净利率": ({"income_statement": ["扣非归母净利润"]}, {"income_statement": ["营业收入"]}),
+    "研发费用率": ({"income_statement": ["研发费用"]}, {"income_statement": ["营业收入"]}),
+    "经营现金流/归母净利润": ({"cash_flow": ["经营活动现金流净额"]}, {"income_statement": ["归母净利润"]}),
+    "经营现金流/扣非归母净利润": ({"cash_flow": ["经营活动现金流净额"]}, {"income_statement": ["扣非归母净利润"]}),
+    "销售收现比": ({"cash_flow": ["销售商品、提供劳务收到的现金"]}, {"income_statement": ["营业收入"]}),
+    "资本开支/营业收入": ({"cash_flow": ["购建固定资产、无形资产和其他长期资产支付的现金"]}, {"income_statement": ["营业收入"]}),
+    "资产负债率": ({"balance_sheet": ["总负债"]}, {"balance_sheet": ["总资产"]}),
+    "商誉/净资产": ({"balance_sheet": ["商誉"]}, {"balance_sheet": ["股东权益"]}),
+    "在建工程/固定资产": ({"balance_sheet": ["在建工程"]}, {"balance_sheet": ["固定资产"]}),
+}
+_YOY_CONTRACT_FIELDS = {
+    "营收同比": {"income_statement": ["营业收入"]},
+    "归母净利润同比": {"income_statement": ["归母净利润"]},
+    "扣非归母净利润同比": {"income_statement": ["扣非归母净利润"]},
+    "单季度营收同比": {"income_statement": ["营业收入"]},
+    "单季度扣非净利润同比": {"income_statement": ["扣非归母净利润"]},
+    "合同负债同比": {"balance_sheet": ["合同负债"]},
+    "在建工程同比": {"balance_sheet": ["在建工程"]},
+    "应收账款同比": {"balance_sheet": ["应收账款"]},
+    "存货同比": {"balance_sheet": ["存货"]},
+}
+_TTM_CONTRACT_FIELDS = {
+    "近四季度滚动营收": {"income_statement": ["营业收入"]},
+    "近四季度滚动扣非净利润": {"income_statement": ["扣非归母净利润"]},
+}
+_DIRECT_MARKET_FIELDS = {
+    "PE 动态": {"market_data": ["PE 动态"]},
+    "行情源PEG": {"market_data": ["行情源PEG"]},
+    "PB 行情源": {"market_data": ["PB 行情源"]},
+    "行情源PS": {"market_data": ["行情源PS"]},
+}
+
+
+def _attach_contract_metadata(registry: dict[str, MetricDefinition]) -> None:
+    for metric_name, definition in registry.items():
+        if metric_name in _SIMPLE_RATIO_CONTRACTS:
+            numerator_fields, denominator_fields = _SIMPLE_RATIO_CONTRACTS[metric_name]
+            contract = {
+                "operation": "simple_ratio",
+                "numerator_fields": numerator_fields,
+                "denominator_fields": denominator_fields,
+                "helper_name": "gross_profit_or_reported" if metric_name == "毛利率" else None,
+            }
+        elif metric_name in _YOY_CONTRACT_FIELDS:
+            contract = {
+                "operation": "yoy",
+                "numerator_fields": _YOY_CONTRACT_FIELDS[metric_name],
+                "denominator_fields": _YOY_CONTRACT_FIELDS[metric_name],
+                "helper_name": "_yoy",
+            }
+        elif metric_name in _TTM_CONTRACT_FIELDS:
+            contract = {
+                "operation": "ttm",
+                "numerator_fields": _TTM_CONTRACT_FIELDS[metric_name],
+                "denominator_fields": {},
+                "helper_name": "_ttm",
+            }
+        elif metric_name in _DIRECT_MARKET_FIELDS:
+            contract = {
+                "operation": "direct_market",
+                "numerator_fields": _DIRECT_MARKET_FIELDS[metric_name],
+                "denominator_fields": {},
+                "helper_name": None,
+            }
+        else:
+            contract = {
+                "operation": "composite_helper",
+                "numerator_fields": definition["source_fields"],
+                "denominator_fields": {},
+                "helper_name": f"compute_financial_factors.{metric_name}",
+            }
+        definition.update(contract)
+        definition["expected_factor_key"] = metric_name
+
+
+_attach_contract_metadata(METRIC_REGISTRY)
+
+
 def registered_metric_names() -> set[str]:
     return set(METRIC_REGISTRY)
 
@@ -470,6 +557,58 @@ def registered_metric_names() -> set[str]:
 def get_metric_definition(metric_name: str) -> dict[str, Any] | None:
     definition = METRIC_REGISTRY.get(metric_name)
     return deepcopy(definition) if definition else None
+
+
+def validate_metric_contracts(registry: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    registry = registry or METRIC_REGISTRY
+    issues: list[dict[str, Any]] = []
+    for metric_name, definition in registry.items():
+        for field in ("operation", "numerator_fields", "denominator_fields", "helper_name", "expected_factor_key"):
+            if field not in definition:
+                issues.append(_contract_issue(metric_name, field, "missing_field", f"{field} is required"))
+        operation = definition.get("operation")
+        if operation is None:
+            continue
+        if operation not in ALLOWED_OPERATIONS:
+            issues.append(_contract_issue(metric_name, "operation", "invalid_operation", f"unsupported operation: {operation}"))
+            continue
+        if definition.get("expected_factor_key") != metric_name:
+            issues.append(_contract_issue(metric_name, "expected_factor_key", "key_mismatch", "expected_factor_key must match registry key"))
+        if operation in {"simple_ratio", "yoy"}:
+            if not definition.get("numerator_fields"):
+                issues.append(_contract_issue(metric_name, "numerator_fields", "missing_formula_fields", f"{operation} requires numerator_fields"))
+            if not definition.get("denominator_fields"):
+                issues.append(_contract_issue(metric_name, "denominator_fields", "missing_formula_fields", f"{operation} requires denominator_fields"))
+        if operation == "ttm" and not definition.get("numerator_fields"):
+            issues.append(_contract_issue(metric_name, "numerator_fields", "missing_formula_fields", "ttm requires numerator_fields"))
+        if operation == "direct_market" and not definition.get("numerator_fields"):
+            issues.append(_contract_issue(metric_name, "numerator_fields", "missing_formula_fields", "direct_market requires market field declaration"))
+        if operation == "composite_helper" and not definition.get("helper_name"):
+            issues.append(_contract_issue(metric_name, "helper_name", "missing_helper", "composite_helper requires helper_name"))
+    return issues
+
+
+def shadow_validate_registry_against_factors(
+    cleaned_reports: dict[str, list[dict[str, Any]]],
+    market_data: dict[str, Any],
+    factors: dict[str, Any],
+    registry: dict[str, dict[str, Any]] | None = None,
+    tolerance: float = 1e-9,
+) -> list[dict[str, Any]]:
+    registry = registry or METRIC_REGISTRY
+    issues = [_shadow_contract_issue(issue) for issue in validate_metric_contracts(registry)]
+    for metric_name, definition in registry.items():
+        if metric_name not in factors:
+            issues.append(_shadow_issue(metric_name, "missing_factor", None, None, "warning"))
+            continue
+        operation = definition.get("operation")
+        if operation not in {"direct_market", "simple_ratio", "yoy"}:
+            continue
+        shadow_value = _shadow_metric_value(metric_name, definition, cleaned_reports, market_data)
+        factor_value = factors.get(metric_name)
+        if not _values_close(shadow_value, factor_value, tolerance):
+            issues.append(_shadow_issue(metric_name, "value_mismatch", shadow_value, factor_value, "warning"))
+    return issues
 
 
 def build_metric_provenance(
@@ -517,6 +656,124 @@ def _unknown_metric(metric_name: str, value: Any) -> dict[str, Any]:
         "status": "missing" if value is None else "partial",
         "sources": [],
     }
+
+
+def _contract_issue(metric_name: str, field: str, issue_type: str, message: str) -> dict[str, Any]:
+    return {
+        "metric_name": metric_name,
+        "field": field,
+        "issue_type": issue_type,
+        "message": message,
+    }
+
+
+def _shadow_contract_issue(issue: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "metric_name": issue.get("metric_name"),
+        "issue_type": issue.get("issue_type", "contract_issue"),
+        "registry_value": issue.get("message"),
+        "factor_value": None,
+        "severity": "error",
+    }
+
+
+def _shadow_issue(metric_name: str, issue_type: str, registry_value: Any, factor_value: Any, severity: str) -> dict[str, Any]:
+    return {
+        "metric_name": metric_name,
+        "issue_type": issue_type,
+        "registry_value": registry_value,
+        "factor_value": factor_value,
+        "severity": severity,
+    }
+
+
+def _shadow_metric_value(
+    metric_name: str,
+    definition: dict[str, Any],
+    cleaned_reports: dict[str, list[dict[str, Any]]],
+    market_data: dict[str, Any],
+) -> float | None:
+    operation = definition.get("operation")
+    if operation == "direct_market":
+        report, field = _first_declared_field(definition.get("numerator_fields", {}))
+        return _to_float(market_data.get(field)) if report == "market_data" else None
+    if operation == "simple_ratio":
+        numerator = _shadow_numerator(metric_name, definition, cleaned_reports)
+        denominator = _shadow_declared_value(definition.get("denominator_fields", {}), definition, cleaned_reports)
+        return _safe_div(numerator, denominator)
+    if operation == "yoy":
+        report, field = _first_declared_field(definition.get("numerator_fields", {}))
+        return _shadow_yoy(cleaned_reports.get(report, []), field)
+    return None
+
+
+def _shadow_numerator(metric_name: str, definition: dict[str, Any], cleaned_reports: dict[str, list[dict[str, Any]]]) -> float | None:
+    if metric_name == "毛利率":
+        rows = cleaned_reports.get("income_statement", [])
+        row = rows[-1] if rows else {}
+        gross_profit = _to_float(row.get("毛利"))
+        if gross_profit is not None:
+            return gross_profit
+        revenue = _to_float(row.get("营业收入"))
+        cost = _to_float(row.get("营业成本"))
+        return None if revenue is None or cost is None else revenue - cost
+    return _shadow_declared_value(definition.get("numerator_fields", {}), definition, cleaned_reports)
+
+
+def _shadow_declared_value(
+    fields_by_report: dict[str, list[str]],
+    definition: dict[str, Any],
+    cleaned_reports: dict[str, list[dict[str, Any]]],
+) -> float | None:
+    report, field = _first_declared_field(fields_by_report)
+    if not report or not field:
+        return None
+    rows = _rows_for_definition(report, definition, cleaned_reports)
+    row = rows[0] if rows else {}
+    return _to_float(row.get(field))
+
+
+def _first_declared_field(fields_by_report: dict[str, list[str]]) -> tuple[str | None, str | None]:
+    for report, fields in fields_by_report.items():
+        if fields:
+            return report, fields[0]
+    return None, None
+
+
+def _shadow_yoy(rows: list[dict[str, Any]], field: str | None) -> float | None:
+    if not field or len(rows) < 2:
+        return None
+    latest_row = rows[-1]
+    base_row = _same_period_last_year(rows, latest_row)
+    if base_row is None:
+        return None
+    latest, base = _to_float(latest_row.get(field)), _to_float(base_row.get(field))
+    if latest is None or base in (None, 0):
+        return None
+    return latest / base - 1
+
+
+def _safe_div(numerator: Any, denominator: Any) -> float | None:
+    numerator_value, denominator_value = _to_float(numerator), _to_float(denominator)
+    if numerator_value is None or denominator_value in (None, 0):
+        return None
+    return numerator_value / denominator_value
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _values_close(first: Any, second: Any, tolerance: float) -> bool:
+    first_value, second_value = _to_float(first), _to_float(second)
+    if first_value is None or second_value is None:
+        return first_value is None and second_value is None
+    return abs(first_value - second_value) <= tolerance
 
 
 def _metric_sources(

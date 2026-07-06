@@ -6,7 +6,7 @@ import os
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-PROJECT_VERSION = "0.5.2"
+PROJECT_VERSION = "0.5.3"
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 RAW_DIR = DATA_DIR / "raw"
