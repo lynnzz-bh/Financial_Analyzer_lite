@@ -15,14 +15,18 @@ def compute_financial_factors(cleaned_reports: dict[str, list[dict[str, Any]]], 
     quarterly_income, quarterly_balance = _latest_quarterly_row(income_rows), _latest_quarterly_row(balance_rows)
     annual_roe = _safe_div(annual_income.get("归母净利润"), annual_balance.get("股东权益"))
     quarterly_roe = _safe_div(quarterly_income.get("归母净利润"), quarterly_balance.get("股东权益"))
+    single_quarter_annualized_roe = _single_quarter_annualized_roe(income_rows, balance_rows)
+    ttm_revenue = _ttm(income_rows, "营业收入")
+    report_based_valuation = compute_report_based_valuation(cleaned_reports, market_data)
     factors = {
         "毛利率": _safe_div(_gross_profit(latest_income), latest_income.get("营业收入")),
         "净利率": _safe_div(latest_income.get("归母净利润"), latest_income.get("营业收入")),
         "扣非净利率": _safe_div(latest_income.get("扣非归母净利润"), latest_income.get("营业收入")),
         "年度ROE": annual_roe,
         "季度ROE": quarterly_roe,
+        "单季度年化ROE": single_quarter_annualized_roe,
         "ROE": annual_roe,
-        "ROA": _safe_div(latest_income.get("归母净利润"), latest_balance.get("总资产")),
+        "ROA": _safe_div(_ttm(income_rows, "归母净利润"), _average_same_period_balance(balance_rows, "总资产")),
         "研发费用率": _safe_div(latest_income.get("研发费用"), latest_income.get("营业收入")),
         "营收同比": _yoy(income_rows, "营业收入"),
         "归母净利润同比": _yoy(income_rows, "归母净利润"),
@@ -44,24 +48,97 @@ def compute_financial_factors(cleaned_reports: dict[str, list[dict[str, Any]]], 
         "有息负债": _interest_bearing_debt(latest_balance),
         "有息负债率": _safe_div(_interest_bearing_debt(latest_balance), latest_balance.get("总资产")),
         "短债/货币资金": _safe_div(_short_debt(latest_balance), latest_balance.get("货币资金")),
-        "应收账款/营业收入": _safe_div(latest_balance.get("应收账款"), latest_income.get("营业收入")),
-        "存货/营业收入": _safe_div(latest_balance.get("存货"), latest_income.get("营业收入")),
+        "应收账款/营业收入": _safe_div(latest_balance.get("应收账款"), ttm_revenue),
+        "存货/营业收入": _safe_div(latest_balance.get("存货"), ttm_revenue),
         "商誉/净资产": _safe_div(latest_balance.get("商誉"), latest_balance.get("股东权益")),
         "在建工程/固定资产": _safe_div(latest_balance.get("在建工程"), latest_balance.get("固定资产")),
         "PE 动态": _to_float(market_data.get("PE 动态")),
-        "PE TTM": _safe_div(_to_float(market_data.get("总市值")), _ttm(income_rows, "归母净利润")),
+        "PE TTM": report_based_valuation["PE TTM"],
+        "行情源PEG": _to_float(market_data.get("行情源PEG")),
         "PB 行情源": _to_float(market_data.get("PB 行情源")),
-        "PB": _safe_div(_to_float(market_data.get("总市值")), latest_balance.get("股东权益")),
-        "PS": _to_float(market_data.get("PS")),
-        # PEG 采用财务分析口径：PE TTM / TTM 扣非归母净利润同比。
-        # 东方财富等行情页可能使用最近年报归母净利润同比，因此展示值可能不同。
-        "PEG": _safe_div(_safe_div(_to_float(market_data.get("总市值")), _ttm(income_rows, "归母净利润")), _pct_to_number(_ttm_yoy(income_rows, "扣非归母净利润"))),
+        "PB": report_based_valuation["PB"],
+        "行情源PS": _to_float(market_data.get("行情源PS")),
+        "PS": report_based_valuation["PS"],
+        # PEG 采用财务分析口径：PE TTM / TTM 归母净利润同比。
+        # 东财行情源 PEG 使用 PE TTM 和未来三年预测 EPS 复合增速，保留为“行情源PEG”对照。
+        "PEG": report_based_valuation["PEG"],
         "市值/扣非净利润": _safe_div(_to_float(market_data.get("总市值")), _ttm(income_rows, "扣非归母净利润")),
         "市值/经营现金流": _safe_div(_to_float(market_data.get("总市值")), _ttm(cash_rows, "经营活动现金流净额")),
     }
     factors["指标缺失数量"] = sum(1 for value in factors.values() if value is None)
     factors["指标总数量"] = len(factors) - 2
     return factors
+
+
+def enrich_market_data_with_report_valuations(market_data: dict[str, Any], cleaned_reports: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    enriched = dict(market_data)
+    report_based_valuation = compute_report_based_valuation(cleaned_reports, market_data)
+    for field in ("PE TTM", "PB", "PS", "PEG"):
+        if report_based_valuation[field] is not None:
+            enriched[field] = report_based_valuation[field]
+    enriched["财报估值计算"] = report_based_valuation["计算明细"]
+    return enriched
+
+
+def compute_report_based_valuation(cleaned_reports: dict[str, list[dict[str, Any]]], market_data: dict[str, Any]) -> dict[str, Any]:
+    income_rows = cleaned_reports.get("income_statement", [])
+    balance_rows = cleaned_reports.get("balance_sheet", [])
+    latest_income = _latest_row(income_rows)
+    latest_balance = _latest_row(balance_rows)
+    market_cap = _to_float(market_data.get("总市值"))
+    ttm_parent_net_profit = _ttm(income_rows, "归母净利润")
+    ttm_parent_net_profit_yoy = _ttm_yoy(income_rows, "归母净利润")
+    ttm_revenue = _ttm(income_rows, "营业收入")
+    latest_equity = _to_float(latest_balance.get("股东权益"))
+    pe_ttm = _safe_div(market_cap, ttm_parent_net_profit)
+    pb = _safe_div(market_cap, latest_equity)
+    ps = _safe_div(market_cap, ttm_revenue)
+    peg = _safe_div(pe_ttm, _pct_to_number(ttm_parent_net_profit_yoy))
+    return {
+        "PE TTM": pe_ttm,
+        "PB": pb,
+        "PS": ps,
+        "PEG": peg,
+        "计算明细": {
+            "PE TTM": {
+                "公式": "总市值 / 近四季度滚动归母净利润",
+                "总市值": market_cap,
+                "近四季度滚动归母净利润": ttm_parent_net_profit,
+                "利润表最新报告期": latest_income.get("report_period"),
+                "利润表最新披露日期": latest_income.get("publish_date"),
+                "计算值": pe_ttm,
+                "状态": "ok" if pe_ttm is not None else "missing",
+            },
+            "PB": {
+                "公式": "总市值 / 最新股东权益",
+                "总市值": market_cap,
+                "最新股东权益": latest_equity,
+                "资产负债表最新报告期": latest_balance.get("report_period"),
+                "资产负债表最新披露日期": latest_balance.get("publish_date"),
+                "计算值": pb,
+                "状态": "ok" if pb is not None else "missing",
+            },
+            "PS": {
+                "公式": "总市值 / 近四季度滚动营业收入",
+                "总市值": market_cap,
+                "近四季度滚动营业收入": ttm_revenue,
+                "利润表最新报告期": latest_income.get("report_period"),
+                "利润表最新披露日期": latest_income.get("publish_date"),
+                "计算值": ps,
+                "状态": "ok" if ps is not None else "missing",
+            },
+            "PEG": {
+                "公式": "PE TTM / TTM 归母净利润同比百分数",
+                "PE TTM": pe_ttm,
+                "TTM归母净利润同比": ttm_parent_net_profit_yoy,
+                "TTM归母净利润同比百分数": _pct_to_number(ttm_parent_net_profit_yoy),
+                "利润表最新报告期": latest_income.get("report_period"),
+                "利润表最新披露日期": latest_income.get("publish_date"),
+                "计算值": peg,
+                "状态": "ok" if peg is not None else "missing",
+            },
+        },
+    }
 
 
 def _latest_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -81,6 +158,60 @@ def _latest_quarterly_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if period and not period.endswith("A"):
             return row
     return _latest_row(rows)
+
+
+def _single_quarter_annualized_roe(income_rows: list[dict[str, Any]], balance_rows: list[dict[str, Any]]) -> float | None:
+    latest_income = _latest_row(income_rows)
+    latest_balance = _latest_row(balance_rows)
+    single_quarter_profit = _single_quarter_value(income_rows, "归母净利润")
+    previous_balance = _previous_balance_for_single_quarter(balance_rows, latest_balance)
+    average_equity = _average_values(latest_balance.get("股东权益"), previous_balance.get("股东权益"))
+    return _safe_div(_multiply(single_quarter_profit, 4), average_equity)
+
+
+def _single_quarter_value(rows: list[dict[str, Any]], field: str) -> float | None:
+    latest_row = _latest_row(rows)
+    period = _parse_period(latest_row.get("report_period"))
+    current = _to_float(latest_row.get(field))
+    if period is None or current is None:
+        return None
+    year, period_code = period
+    previous_period = {"Q1": None, "H1": "Q1", "Q3": "H1", "A": "Q3"}[period_code]
+    if previous_period is None:
+        return current
+    previous = _to_float(_row_for_period(rows, f"{year}{previous_period}").get(field))
+    if previous is None:
+        return None
+    return current - previous
+
+
+def _previous_balance_for_single_quarter(rows: list[dict[str, Any]], latest_row: dict[str, Any]) -> dict[str, Any]:
+    period = _parse_period(latest_row.get("report_period"))
+    if period is None:
+        return {}
+    year, period_code = period
+    previous_period = {"Q1": f"{year - 1}A", "H1": f"{year}Q1", "Q3": f"{year}H1", "A": f"{year}Q3"}[period_code]
+    return _row_for_period(rows, previous_period)
+
+
+def _average_same_period_balance(rows: list[dict[str, Any]], field: str) -> float | None:
+    latest_row = _latest_row(rows)
+    base_row = _same_period_last_year(rows, latest_row)
+    if base_row is None:
+        return None
+    return _average_values(latest_row.get(field), base_row.get(field))
+
+
+def _average_values(first: Any, second: Any) -> float | None:
+    first_value, second_value = _to_float(first), _to_float(second)
+    if first_value is None or second_value is None:
+        return None
+    return (first_value + second_value) / 2
+
+
+def _multiply(value: Any, factor: float) -> float | None:
+    numeric = _to_float(value)
+    return None if numeric is None else numeric * factor
 
 
 def _safe_div(numerator: Any, denominator: Any) -> float | None:

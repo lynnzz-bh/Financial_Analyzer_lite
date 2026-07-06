@@ -73,12 +73,22 @@ METRIC_REGISTRY: dict[str, MetricDefinition] = {
     "季度ROE": {
         "category": "盈利",
         "formula_text": "最新非年报报告期归母净利润 / 最新非年报报告期股东权益",
-        "caliber_note": "使用最新非年报报告期累计利润和期末股东权益；严格单季度拆分留到 0.6.0。",
+        "caliber_note": "使用最新非年报报告期累计利润和期末股东权益；保留为东财 ROEJQ 近似对照口径。",
         "source_reports": ["income_statement", "balance_sheet"],
         "source_fields": {"income_statement": ["归母净利润"], "balance_sheet": ["股东权益"]},
         "unit": "ratio",
         "is_ttm": False,
         "period_note": "最新非年报利润表与最新非年报资产负债表。",
+    },
+    "单季度年化ROE": {
+        "category": "盈利",
+        "formula_text": "单季度归母净利润 × 4 / 平均股东权益",
+        "caliber_note": "将最新单季度归母净利润年化，平均股东权益使用本季期末和上一报告期期末股东权益均值；适合观察单季回报率强度。",
+        "source_reports": ["income_statement", "balance_sheet"],
+        "source_fields": {"income_statement": ["归母净利润"], "balance_sheet": ["股东权益"]},
+        "unit": "ratio",
+        "is_ttm": False,
+        "period_note": "最新单季度利润与相邻两期资产负债表。",
     },
     "ROE": {
         "category": "盈利",
@@ -92,13 +102,13 @@ METRIC_REGISTRY: dict[str, MetricDefinition] = {
     },
     "ROA": {
         "category": "盈利",
-        "formula_text": "归母净利润 / 总资产",
-        "caliber_note": "未做平均总资产修正，沿用当前最新资产负债表总资产。",
+        "formula_text": "TTM 归母净利润 / 平均总资产",
+        "caliber_note": "使用近四季度滚动归母净利润除以最新报告期和去年同期总资产均值，避免季度利润未年化导致 ROA 偏低。",
         "source_reports": ["income_statement", "balance_sheet"],
         "source_fields": {"income_statement": ["归母净利润"], "balance_sheet": ["总资产"]},
         "unit": "ratio",
         "is_ttm": False,
-        "period_note": "最新利润表与最新资产负债表。",
+        "period_note": "利润为 TTM；总资产为最新报告期和去年同期均值。",
     },
     "研发费用率": {
         "category": "盈利",
@@ -312,23 +322,23 @@ METRIC_REGISTRY: dict[str, MetricDefinition] = {
     },
     "应收账款/营业收入": {
         "category": "资产安全",
-        "formula_text": "应收账款 / 营业收入",
-        "caliber_note": "观察收入对应的应收压力。",
+        "formula_text": "期末应收账款 / TTM 营业收入",
+        "caliber_note": "观察应收账款相对近四季度收入规模的占用压力，避免一季报直接除以 Q1 收入导致比例失真。",
         "source_reports": ["balance_sheet", "income_statement"],
         "source_fields": {"balance_sheet": ["应收账款"], "income_statement": ["营业收入"]},
         "unit": "ratio",
         "is_ttm": False,
-        "period_note": "最新资产负债表与最新利润表。",
+        "period_note": "应收账款为最新期末数；营业收入为 TTM。",
     },
     "存货/营业收入": {
         "category": "资产安全",
-        "formula_text": "存货 / 营业收入",
-        "caliber_note": "观察存货相对收入规模的压力。",
+        "formula_text": "期末存货 / TTM 营业收入",
+        "caliber_note": "观察存货相对近四季度收入规模的占用压力，避免一季报直接除以 Q1 收入导致比例失真。",
         "source_reports": ["balance_sheet", "income_statement"],
         "source_fields": {"balance_sheet": ["存货"], "income_statement": ["营业收入"]},
         "unit": "ratio",
         "is_ttm": False,
-        "period_note": "最新资产负债表与最新利润表。",
+        "period_note": "存货为最新期末数；营业收入为 TTM。",
     },
     "商誉/净资产": {
         "category": "资产安全",
@@ -353,7 +363,7 @@ METRIC_REGISTRY: dict[str, MetricDefinition] = {
     "PE 动态": {
         "category": "估值",
         "formula_text": "行情源提供的动态市盈率",
-        "caliber_note": "东方财富/AKShare 的市盈率-动态，通常近似为总市值除以最新季度利润年化值，不等同于 PE TTM。",
+        "caliber_note": "东方财富/AKShare 的市盈率-动态，通常以当年已披露的归母净利润倍增为全年预测利润后计算，不等同于 PE TTM。",
         "source_reports": ["market_data"],
         "source_fields": {"market_data": ["PE 动态"]},
         "unit": "multiple",
@@ -369,6 +379,16 @@ METRIC_REGISTRY: dict[str, MetricDefinition] = {
         "unit": "multiple",
         "is_ttm": True,
         "period_note": "总市值为行情源最新口径；归母净利润为 TTM。",
+    },
+    "行情源PEG": {
+        "category": "估值",
+        "formula_text": "行情源提供的 PEG",
+        "caliber_note": "东方财富 PEG 采用市盈率 TTM / 公司未来 3 年每股收益复合增长率，增长率来自其分析师预测 EPS；保留用于对照，不作为主 PEG。",
+        "source_reports": ["market_data"],
+        "source_fields": {"market_data": ["行情源PEG"]},
+        "unit": "multiple",
+        "is_ttm": False,
+        "period_note": "行情源最新可用口径。",
     },
     "PB": {
         "category": "估值",
@@ -390,25 +410,35 @@ METRIC_REGISTRY: dict[str, MetricDefinition] = {
         "is_ttm": False,
         "period_note": "行情源最新可用口径。",
     },
-    "PS": {
+    "行情源PS": {
         "category": "估值",
-        "formula_text": "行情源提供的 PS",
-        "caliber_note": "直接沿用 market_data，不由本项目重算。",
+        "formula_text": "行情源提供的市销率",
+        "caliber_note": "东方财富/AKShare 的市销率字段，保留用于对照；主 PS 使用项目内部计算口径。",
         "source_reports": ["market_data"],
-        "source_fields": {"market_data": ["PS"]},
+        "source_fields": {"market_data": ["行情源PS"]},
         "unit": "multiple",
         "is_ttm": False,
         "period_note": "行情源最新可用口径。",
     },
-    "PEG": {
+    "PS": {
         "category": "估值",
-        "formula_text": "PE TTM / TTM 扣非归母净利润同比百分数",
-        "caliber_note": "PE TTM 由本项目基于市值和 TTM 归母净利润计算，增长率由现有 TTM 扣非归母净利润同比口径推导。",
+        "formula_text": "总市值 / 近四季度滚动营业收入",
+        "caliber_note": "由本项目基于行情总市值和利润表 TTM 营业收入计算，避免直接沿用口径不透明的行情源 PS。",
         "source_reports": ["market_data", "income_statement"],
-        "source_fields": {"market_data": ["总市值"], "income_statement": ["归母净利润", "扣非归母净利润"]},
+        "source_fields": {"market_data": ["总市值"], "income_statement": ["营业收入"]},
         "unit": "multiple",
         "is_ttm": True,
-        "period_note": "PE 和增长率均使用最新报告期对应的 TTM。",
+        "period_note": "总市值为行情源最新口径；营业收入为 TTM。",
+    },
+    "PEG": {
+        "category": "估值",
+        "formula_text": "PE TTM / TTM 归母净利润同比百分数",
+        "caliber_note": "PE TTM 和增长率均使用归母净利润 TTM 口径；行情源预测/动态口径另以“行情源PEG”保留。",
+        "source_reports": ["market_data", "income_statement"],
+        "source_fields": {"market_data": ["总市值"], "income_statement": ["归母净利润"]},
+        "unit": "multiple",
+        "is_ttm": True,
+        "period_note": "PE 和增长率均使用最新报告期对应的 TTM 归母净利润。",
     },
     "市值/扣非净利润": {
         "category": "估值",
@@ -515,14 +545,22 @@ def _rows_for_definition(
     rows = cleaned_reports.get(report_name, [])
     if not rows:
         return []
+    if "单季度" in definition["formula_text"]:
+        return _single_quarter_trace_rows(rows) if report_name == "income_statement" else _single_quarter_balance_trace_rows(rows)
     if "最新年报" in definition["period_note"]:
         return [_latest_annual_trace_row(rows)]
     if "最新非年报" in definition["period_note"]:
         return [_latest_quarterly_trace_row(rows)]
-    if "去年同期" in definition["period_note"] or "同比" in definition["formula_text"]:
+    if report_name == "balance_sheet" and "去年同期均值" in definition["period_note"]:
         return _latest_and_same_period_last_year(rows)
+    if report_name == "balance_sheet" and "期末数" in definition["period_note"]:
+        return [rows[-1]]
+    if report_name == "income_statement" and "TTM" in definition["period_note"]:
+        return _ttm_trace_rows(rows)
     if definition["is_ttm"] and report_name != "market_data":
         return _ttm_trace_rows(rows)
+    if "去年同期" in definition["period_note"] or "同比" in definition["formula_text"]:
+        return _latest_and_same_period_last_year(rows)
     return [rows[-1]]
 
 
@@ -545,6 +583,30 @@ def _latest_and_same_period_last_year(rows: list[dict[str, Any]]) -> list[dict[s
     latest = rows[-1]
     base = _same_period_last_year(rows, latest)
     return [row for row in (latest, base) if row]
+
+
+def _single_quarter_trace_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest = rows[-1]
+    period = _parse_period(latest.get("report_period"))
+    if period is None:
+        return [latest]
+    year, period_code = period
+    previous_period = {"Q1": None, "H1": "Q1", "Q3": "H1", "A": "Q3"}[period_code]
+    if previous_period is None:
+        return [latest]
+    previous = _row_for_period(rows, f"{year}{previous_period}")
+    return [row for row in (latest, previous) if row]
+
+
+def _single_quarter_balance_trace_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest = rows[-1]
+    period = _parse_period(latest.get("report_period"))
+    if period is None:
+        return [latest]
+    year, period_code = period
+    previous_period = {"Q1": f"{year - 1}A", "H1": f"{year}Q1", "Q3": f"{year}H1", "A": f"{year}Q3"}[period_code]
+    previous = _row_for_period(rows, previous_period)
+    return [row for row in (latest, previous) if row]
 
 
 def _ttm_trace_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

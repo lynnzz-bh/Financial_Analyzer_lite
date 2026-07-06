@@ -13,7 +13,7 @@ REPORT_NAMES = {
     "cash_flow": "现金流量表",
 }
 MARKET_REQUIRED_FIELDS = ["股票简称", "最新收盘价", "总市值"]
-MARKET_VALUATION_FIELDS = ["PE TTM", "PB", "PS"]
+MARKET_RAW_VALUATION_FIELDS = ["PE 动态", "PE TTM", "行情源PEG", "PB 行情源", "PB", "行情源PS"]
 
 
 def inspect_raw_fetch_quality(
@@ -27,8 +27,8 @@ def inspect_raw_fetch_quality(
     for field in MARKET_REQUIRED_FIELDS:
         if _is_missing(market_data.get(field)):
             warnings.append(_warning("raw_fetch", "market_data", f"行情字段缺失：{field}"))
-    if all(_is_missing(market_data.get(field)) for field in MARKET_VALUATION_FIELDS):
-        warnings.append(_warning("raw_fetch", "market_data", "估值字段缺失：PE TTM、PB、PS 均为空"))
+    if all(_is_missing(market_data.get(field)) for field in MARKET_RAW_VALUATION_FIELDS):
+        warnings.append(_warning("raw_fetch", "market_data", "行情估值字段缺失：PE 动态、PE TTM、行情源PEG、PB 行情源、PB、行情源PS 均为空"))
     empty_report_names = []
     for name, label in REPORT_NAMES.items():
         df = reports.get(name)

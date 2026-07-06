@@ -148,7 +148,7 @@ def build_raw_data_snapshot(
         _dict_lines(stock_info, ["股票代码", "股票简称", "行业", "上市时间", "总股本", "流通股", "error"]),
         "",
         "## 行情数据",
-        _dict_lines(market_data, ["股票代码", "股票简称", "最新收盘价", "总市值", "流通市值", "PE TTM", "PB", "PS", "近20日涨跌幅", "近60日涨跌幅"]),
+        _dict_lines(market_data, ["股票代码", "股票简称", "最新收盘价", "总市值", "流通市值", "PE TTM", "行情源PEG", "PEG", "PB", "行情源PS", "PS", "近20日涨跌幅", "近60日涨跌幅"]),
     ]
     for name, df in reports.items():
         lines.extend(["", f"## 原始财报：{name}", _dataframe_preview(name, df, max_rows)])

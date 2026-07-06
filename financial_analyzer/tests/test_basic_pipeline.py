@@ -19,7 +19,7 @@ from src.data_fetcher.astock_data_provider import (
 )
 from src.data_fetcher.business_fetcher import build_business_context
 from src.data_fetcher.market_fetcher import _map_market_row
-from src.factors.financial_factors import compute_financial_factors
+from src.factors.financial_factors import compute_financial_factors, enrich_market_data_with_report_valuations
 from src.factors.metric_registry import META_FACTOR_KEYS, build_metric_provenance, registered_metric_names
 from src.llm import llm_pipeline
 from src.factors.risk_flags import generate_risk_flags
@@ -127,12 +127,15 @@ def test_astock_fund_flow_parser() -> None:
     assert rows[1]["main_net"] is None
 
 
-def test_market_row_keeps_dynamic_pe_separate_from_ttm_pe() -> None:
-    market = _map_market_row({"名称": "四方股份", "最新价": 58, "总市值": 48320119000, "市盈率-动态": 44.63, "市净率": 10.57}, "601126")
+def test_market_row_keeps_source_valuation_fields_separate_from_project_metrics() -> None:
+    market = _map_market_row({"名称": "四方股份", "最新价": 58, "总市值": 48320119000, "市盈率-动态": 44.63, "PEG": 3.47, "市净率": 10.57, "市销率": 6.2}, "601126")
     assert market["PE 动态"] == 44.63
     assert market["PE TTM"] is None
+    assert market["行情源PEG"] == 3.47
     assert market["PB 行情源"] == 10.57
     assert market["PB"] is None
+    assert market["行情源PS"] == 6.2
+    assert market["PS"] is None
 
 
 def test_money_normalized_to_yuan() -> None:
@@ -189,6 +192,31 @@ def test_data_quality_warning_for_missing_disclosure_date() -> None:
 
 def test_data_quality_status_ok_without_warnings() -> None:
     assert summarize_quality_status([]) == "ok"
+
+
+def test_raw_fetch_quality_accepts_source_valuation_fields_after_caliber_split() -> None:
+    warnings = inspect_raw_fetch_quality(
+        {"股票代码": "601126", "股票简称": "四方股份"},
+        {
+            "股票代码": "601126",
+            "股票简称": "四方股份",
+            "最新收盘价": 61.6,
+            "总市值": 51319298800.0,
+            "PE 动态": 47.4,
+            "PE TTM": None,
+            "行情源PEG": 3.47,
+            "PB 行情源": 11.23,
+            "PB": None,
+            "行情源PS": 7.5,
+        },
+        {
+            "income_statement": pd.DataFrame([{"营业收入": 1}]),
+            "balance_sheet": pd.DataFrame([{"总资产": 1}]),
+            "cash_flow": pd.DataFrame([{"经营活动现金流净额": 1}]),
+        },
+    )
+
+    assert warnings == []
 
 
 def test_business_context_builds_latest_composition_and_sw_industry() -> None:
@@ -326,7 +354,7 @@ def test_main_raw_fatal_generates_failure_report_without_scoring(tmp_path, monke
     monkeypatch.setattr(report_generator, "OUTPUT_DIR", output_dir)
     monkeypatch.setattr(sys, "argv", ["main.py", "--code", "600519", "--date", "2026-06-24", "--mode", "买入前检查"])
     monkeypatch.setattr(main_module, "fetch_stock_info", lambda code: {"股票代码": code, "股票简称": "贵州茅台"})
-    monkeypatch.setattr(main_module, "fetch_market_data", lambda code, analysis_date: {"股票简称": "贵州茅台", "最新收盘价": 100, "总市值": 1000, "PE TTM": 20, "PB": 3, "PS": 5})
+    monkeypatch.setattr(main_module, "fetch_market_data", lambda code, analysis_date: {"股票简称": "贵州茅台", "最新收盘价": 100, "总市值": 1000, "PE 动态": 22, "PE TTM": None, "行情源PEG": 3.47, "PB 行情源": 4, "PB": None, "行情源PS": 9})
     monkeypatch.setattr(main_module, "fetch_financial_reports", lambda code: {
         "income_statement": pd.DataFrame(),
         "balance_sheet": pd.DataFrame(),
@@ -362,7 +390,7 @@ def test_main_normal_run_saves_metric_provenance(tmp_path, monkeypatch: pytest.M
     monkeypatch.setattr(main_module, "cleanup_output_if_requested", lambda enabled, code: None)
     monkeypatch.setattr(sys, "argv", ["main.py", "--code", "600519", "--date", "2026-06-24", "--mode", "买入前检查"])
     monkeypatch.setattr(main_module, "fetch_stock_info", lambda code: {"股票代码": code, "股票简称": "贵州茅台"})
-    monkeypatch.setattr(main_module, "fetch_market_data", lambda code, analysis_date: {"股票简称": "贵州茅台", "最新收盘价": 100, "总市值": 1000, "PE TTM": 20, "PB": 3, "PS": 5})
+    monkeypatch.setattr(main_module, "fetch_market_data", lambda code, analysis_date: {"股票简称": "贵州茅台", "最新收盘价": 100, "总市值": 1000, "PE 动态": 22, "PE TTM": None, "行情源PEG": 3.47, "PB 行情源": 4, "PB": None, "行情源PS": 9})
     monkeypatch.setattr(main_module, "fetch_financial_reports", lambda code: {"income_statement": pd.DataFrame([{"x": 1}]), "balance_sheet": pd.DataFrame([{"x": 1}]), "cash_flow": pd.DataFrame([{"x": 1}])})
     monkeypatch.setattr(main_module, "fetch_announcements", lambda code, analysis_date: [])
     monkeypatch.setattr(main_module, "clean_financial_reports", lambda reports, analysis_date: {
@@ -381,6 +409,16 @@ def test_main_normal_run_saves_metric_provenance(tmp_path, monkeypatch: pytest.M
     assert provenance["schema_version"] == "metric_provenance.v1"
     assert provenance["registry_mode"] == "description_only"
     assert provenance["metrics"]["毛利率"]["formula_text"] == "毛利 / 营业收入"
+    market_data = json.loads((processed_dir / "600519_market_data.json").read_text(encoding="utf-8"))
+    assert market_data["PE 动态"] == 22
+    assert market_data["PE TTM"] == pytest.approx(100)
+    assert market_data["行情源PEG"] == 3.47
+    assert market_data["PB 行情源"] == 4
+    assert market_data["PB"] == pytest.approx(20)
+    assert market_data["行情源PS"] == 9
+    assert market_data["PS"] == pytest.approx(10)
+    assert market_data["财报估值计算"]["PE TTM"]["状态"] == "ok"
+    assert market_data["财报估值计算"]["PS"]["状态"] == "ok"
     reports = list(output_dir.glob("*财务分析简报.md"))
     assert len(reports) == 1
     assert "指标口径与来源追溯" in reports[0].read_text(encoding="utf-8")
@@ -557,7 +595,7 @@ def test_factor_score_and_risk_rules() -> None:
             {"经营活动现金流净额": -1, "销售商品、提供劳务收到的现金": 100, "购建固定资产、无形资产和其他长期资产支付的现金": 10},
         ],
     }
-    factors = compute_financial_factors(reports, {"PE TTM": 20, "PB": 3, "PS": 4, "总市值": 1000})
+    factors = compute_financial_factors(reports, {"PE TTM": 20, "PB": 3, "行情源PS": 4, "总市值": 1000})
     assert factors["毛利率"] is not None
     assert factors["指标总数量"] >= 20
     risks = generate_risk_flags(factors, reports, [{"公告标题": "关于收到监管函的公告"}])
@@ -582,7 +620,7 @@ def test_metric_registry_matches_financial_factor_fields() -> None:
             {"report_period": "2025A", "经营活动现金流净额": -1, "销售商品、提供劳务收到的现金": 100, "购建固定资产、无形资产和其他长期资产支付的现金": 10},
         ],
     }
-    factors = compute_financial_factors(reports, {"PE TTM": 20, "PB": 3, "PS": 4, "总市值": 1000})
+    factors = compute_financial_factors(reports, {"PE TTM": 20, "PB": 3, "行情源PS": 4, "总市值": 1000})
     factor_names = set(factors) - META_FACTOR_KEYS
     assert factor_names <= registered_metric_names()
     assert registered_metric_names() <= factor_names
@@ -605,6 +643,42 @@ def test_pb_is_computed_from_market_cap_and_latest_equity() -> None:
     assert provenance["metrics"]["PB"]["sources"][1]["period_prefix"] == "季度"
 
 
+def test_market_data_is_enriched_with_report_based_valuation_details() -> None:
+    reports = {
+        "income_statement": [
+            {"report_period": "2022Q1", "publish_date": "2022-04-28", "归母净利润": 4, "营业收入": 50},
+            {"report_period": "2022A", "publish_date": "2023-03-28", "归母净利润": 70, "营业收入": 700},
+            {"report_period": "2023Q1", "publish_date": "2023-04-28", "归母净利润": 5, "营业收入": 60},
+            {"report_period": "2023A", "publish_date": "2024-03-28", "归母净利润": 80, "营业收入": 760},
+            {"report_period": "2024Q1", "publish_date": "2024-04-28", "归母净利润": 10, "营业收入": 90},
+        ],
+        "balance_sheet": [
+            {"report_period": "2024Q1", "publish_date": "2024-04-28", "股东权益": 220},
+        ],
+        "cash_flow": [],
+    }
+
+    market = enrich_market_data_with_report_valuations(
+        {"股票代码": "600519", "总市值": 850, "PE 动态": 12.5, "PE TTM": None, "行情源PEG": 3.47, "PB 行情源": 4.0, "PB": None, "行情源PS": 7.2},
+        reports,
+    )
+
+    assert market["PE 动态"] == 12.5
+    assert market["行情源PEG"] == 3.47
+    assert market["PB 行情源"] == 4.0
+    assert market["行情源PS"] == 7.2
+    assert market["PE TTM"] == pytest.approx(10)
+    assert market["PEG"] == pytest.approx(10 / ((85 / 71 - 1) * 100))
+    assert market["PB"] == pytest.approx(850 / 220)
+    assert market["PS"] == pytest.approx(850 / 790)
+    assert market["财报估值计算"]["PE TTM"]["公式"] == "总市值 / 近四季度滚动归母净利润"
+    assert market["财报估值计算"]["PE TTM"]["近四季度滚动归母净利润"] == pytest.approx(85)
+    assert market["财报估值计算"]["PE TTM"]["状态"] == "ok"
+    assert market["财报估值计算"]["PB"]["资产负债表最新报告期"] == "2024Q1"
+    assert market["财报估值计算"]["PS"]["近四季度滚动营业收入"] == pytest.approx(790)
+    assert market["财报估值计算"]["PEG"]["TTM归母净利润同比"] == pytest.approx(85 / 71 - 1)
+
+
 def test_annual_and_quarterly_roe_are_separate() -> None:
     reports = {
         "income_statement": [
@@ -621,6 +695,7 @@ def test_annual_and_quarterly_roe_are_separate() -> None:
     provenance = build_metric_provenance(reports, {}, factors)
     assert factors["年度ROE"] == pytest.approx(0.2)
     assert factors["季度ROE"] == pytest.approx(20 / 650)
+    assert factors["单季度年化ROE"] == pytest.approx((20 * 4) / ((650 + 600) / 2))
     assert factors["ROE"] == pytest.approx(factors["年度ROE"])
     assert provenance["metrics"]["年度ROE"]["sources"][0]["report_period"] == "2024A"
     assert provenance["metrics"]["年度ROE"]["sources"][1]["report_period"] == "2024A"
@@ -628,6 +703,9 @@ def test_annual_and_quarterly_roe_are_separate() -> None:
     assert provenance["metrics"]["季度ROE"]["sources"][0]["report_period"] == "2025Q1"
     assert provenance["metrics"]["季度ROE"]["sources"][1]["report_period"] == "2025Q1"
     assert provenance["metrics"]["季度ROE"]["sources"][0]["period_prefix"] == "季度"
+    assert provenance["metrics"]["单季度年化ROE"]["sources"][0]["report_period"] == "2025Q1"
+    assert provenance["metrics"]["单季度年化ROE"]["sources"][1]["report_period"] == "2025Q1"
+    assert provenance["metrics"]["单季度年化ROE"]["sources"][2]["report_period"] == "2024A"
 
 
 def test_metric_provenance_marks_half_year_sources() -> None:
@@ -644,6 +722,31 @@ def test_metric_provenance_marks_half_year_sources() -> None:
     assert source["period_prefix"] == "半年度"
 
 
+def test_roa_and_working_capital_ratios_use_ttm_income_denominators() -> None:
+    reports = {
+        "income_statement": [
+            {"report_period": "2023Q1", "归母净利润": 5, "营业收入": 80},
+            {"report_period": "2023A", "归母净利润": 80, "营业收入": 800},
+            {"report_period": "2024Q1", "归母净利润": 10, "营业收入": 100},
+        ],
+        "balance_sheet": [
+            {"report_period": "2023Q1", "总资产": 900, "应收账款": 90, "存货": 120},
+            {"report_period": "2024Q1", "总资产": 1100, "应收账款": 220, "存货": 330},
+        ],
+        "cash_flow": [],
+    }
+
+    factors = compute_financial_factors(reports, {})
+    provenance = build_metric_provenance(reports, {}, factors)
+
+    assert factors["ROA"] == pytest.approx(85 / 1000)
+    assert factors["应收账款/营业收入"] == pytest.approx(220 / 820)
+    assert factors["存货/营业收入"] == pytest.approx(330 / 820)
+    assert provenance["metrics"]["ROA"]["formula_text"] == "TTM 归母净利润 / 平均总资产"
+    assert provenance["metrics"]["应收账款/营业收入"]["formula_text"] == "期末应收账款 / TTM 营业收入"
+    assert provenance["metrics"]["存货/营业收入"]["formula_text"] == "期末存货 / TTM 营业收入"
+
+
 def test_metric_provenance_schema_snapshot() -> None:
     reports = {
         "income_statement": [
@@ -653,8 +756,8 @@ def test_metric_provenance_schema_snapshot() -> None:
         "balance_sheet": [],
         "cash_flow": [],
     }
-    factors = compute_financial_factors(reports, {"PE TTM": 20, "PB": 3, "PS": 4, "总市值": 1000})
-    provenance = build_metric_provenance(reports, {"PE TTM": 20, "PB": 3, "PS": 4, "总市值": 1000}, factors)
+    factors = compute_financial_factors(reports, {"PE TTM": 20, "行情源PEG": 3.47, "PB": 3, "行情源PS": 4, "总市值": 1000})
+    provenance = build_metric_provenance(reports, {"PE TTM": 20, "行情源PEG": 3.47, "PB": 3, "行情源PS": 4, "总市值": 1000}, factors)
     assert sorted(provenance.keys()) == ["calculation_source", "metrics", "registry_mode", "schema_version"]
     assert provenance["schema_version"] == "metric_provenance.v1"
     assert provenance["registry_mode"] == "description_only"
@@ -697,6 +800,14 @@ def test_metric_provenance_schema_snapshot() -> None:
             "unit": "元",
         },
     ]
+    assert "当年已披露的归母净利润倍增为全年预测利润" in provenance["metrics"]["PE 动态"]["caliber_note"]
+    assert provenance["metrics"]["行情源PEG"]["sources"][0]["available_fields"] == ["行情源PEG"]
+    assert "未来 3 年每股收益复合增长率" in provenance["metrics"]["行情源PEG"]["caliber_note"]
+    assert "分析师预测 EPS" in provenance["metrics"]["行情源PEG"]["caliber_note"]
+    assert provenance["metrics"]["PEG"]["formula_text"] == "PE TTM / TTM 归母净利润同比百分数"
+    assert provenance["metrics"]["行情源PS"]["sources"][0]["available_fields"] == ["行情源PS"]
+    assert provenance["metrics"]["PS"]["formula_text"] == "总市值 / 近四季度滚动营业收入"
+    assert provenance["metrics"]["PS"]["is_ttm"] is True
 
 
 def test_yoy_uses_same_report_period_last_year() -> None:
@@ -742,6 +853,27 @@ def test_valuation_uses_ttm_denominators() -> None:
     factors = compute_financial_factors(reports, {"PE TTM": 20, "总市值": 1100})
     assert factors["近四季度滚动扣非净利润"] == pytest.approx(110)
     assert factors["PE TTM"] == pytest.approx(10)
+    assert factors["PS"] == pytest.approx(1100 / 1040)
     assert factors["市值/扣非净利润"] == pytest.approx(10)
     assert factors["市值/经营现金流"] == pytest.approx(11)
     assert factors["PEG"] == pytest.approx(10 / ((110 / 85 - 1) * 100))
+
+
+def test_peg_uses_parent_profit_ttm_growth_not_deducted_profit_growth() -> None:
+    reports = {
+        "income_statement": [
+            {"report_period": "2023Q1", "归母净利润": 10, "扣非归母净利润": 10},
+            {"report_period": "2023A", "归母净利润": 100, "扣非归母净利润": 100},
+            {"report_period": "2024Q1", "归母净利润": 10, "扣非归母净利润": 20},
+            {"report_period": "2024A", "归母净利润": 100, "扣非归母净利润": 200},
+            {"report_period": "2025Q1", "归母净利润": 20, "扣非归母净利润": 40},
+        ],
+        "balance_sheet": [],
+        "cash_flow": [],
+    }
+
+    factors = compute_financial_factors(reports, {"总市值": 1100, "行情源PEG": 3.47})
+
+    assert factors["PE TTM"] == pytest.approx(10)
+    assert factors["行情源PEG"] == pytest.approx(3.47)
+    assert factors["PEG"] == pytest.approx(1)

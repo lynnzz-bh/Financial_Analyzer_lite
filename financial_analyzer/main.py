@@ -14,7 +14,7 @@ from src.data_fetcher.akshare_fetcher import fetch_financial_reports, fetch_stoc
 from src.data_fetcher.announcement_fetcher import fetch_announcements
 from src.data_fetcher.business_fetcher import build_business_context, fetch_business_source_tables
 from src.data_fetcher.market_fetcher import fetch_market_data
-from src.factors.financial_factors import compute_financial_factors
+from src.factors.financial_factors import compute_financial_factors, enrich_market_data_with_report_valuations
 from src.factors.metric_registry import build_metric_provenance
 from src.factors.risk_flags import generate_risk_flags
 from src.llm.llm_pipeline import run_llm_pipeline
@@ -95,6 +95,7 @@ def main() -> int:
         logger.info("开始分析 %s，分析日期 %s，目标：%s", code, analysis_date, args.mode)
         stock_info = fetch_stock_info(code)
         market_data = fetch_market_data(code, analysis_date)
+        raw_market_data = dict(market_data)
         reports = fetch_financial_reports(code)
         announcements = fetch_announcements(code, analysis_date)
         data_quality_warnings = inspect_raw_fetch_quality(stock_info, market_data, reports)
@@ -118,8 +119,10 @@ def main() -> int:
         for warning in data_quality_warnings:
             if warning["stage"] == "cleaned_data":
                 logger.warning("数据质量警告：%s | %s | %s", warning["stage"], warning["source"], warning["message"])
+        market_data = enrich_market_data_with_report_valuations(market_data, cleaned_reports)
         data_quality_status = summarize_quality_status(data_quality_warnings)
         save_json(cleaned_reports, PROCESSED_DIR / f"{code}_cleaned_reports.json")
+        save_json(market_data, PROCESSED_DIR / f"{code}_market_data.json")
         if data_quality_status == "fatal":
             save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
             report_path = generate_data_failure_report(_failure_context(code, args.mode, analysis_date, stock_info, market_data, data_quality_warnings, data_quality_status))
@@ -141,7 +144,7 @@ def main() -> int:
                 mode=args.mode,
                 analysis_date=analysis_date,
                 stock_info=stock_info,
-                market_data=market_data,
+                market_data=raw_market_data,
                 reports=reports,
                 announcements=announcements,
                 data_quality_warnings=data_quality_warnings,

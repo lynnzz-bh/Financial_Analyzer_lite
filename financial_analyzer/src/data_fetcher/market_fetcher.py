@@ -60,9 +60,11 @@ def _map_market_row(row: dict[str, Any], code: str) -> dict[str, Any]:
         "流通市值": _first_present(row, ["流通市值"]),
         "PE 动态": _first_present(row, ["市盈率-动态", "PE 动态"]),
         "PE TTM": _first_present(row, ["市盈率TTM", "PE TTM"]),
+        "行情源PEG": _first_present(row, ["PEG", "行情源PEG"]),
         "PB 行情源": _first_present(row, ["市净率", "PB 行情源"]),
         "PB": _first_present(row, ["PB"]),
-        "PS": _first_present(row, ["市销率", "PS"]),
+        "行情源PS": _first_present(row, ["市销率", "行情源PS", "PS"]),
+        "PS": None,
         "成交额": _first_present(row, ["成交额"]),
         "换手率": _first_present(row, ["换手率"]),
     }
