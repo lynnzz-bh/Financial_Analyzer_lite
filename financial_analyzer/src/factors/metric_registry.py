@@ -23,7 +23,7 @@ class MetricDefinition(TypedDict):
     period_note: str
 
 
-SCHEMA_VERSION = "metric_provenance.v1"
+SCHEMA_VERSION = "metric_provenance.v1.1"
 REGISTRY_MODE = "description_only"
 CALCULATION_SOURCE = "src.factors.financial_factors.compute_financial_factors"
 META_FACTOR_KEYS = {"指标缺失数量", "指标总数量"}
@@ -476,6 +476,7 @@ def build_metric_provenance(
     cleaned_reports: dict[str, list[dict[str, Any]]],
     market_data: dict[str, Any],
     factors: dict[str, Any],
+    source_audit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
     for metric_name in sorted(key for key in factors if key not in META_FACTOR_KEYS):
@@ -499,6 +500,7 @@ def build_metric_provenance(
         "schema_version": SCHEMA_VERSION,
         "registry_mode": REGISTRY_MODE,
         "calculation_source": CALCULATION_SOURCE,
+        "source_audit": source_audit or _missing_source_audit(),
         "metrics": metrics,
     }
 
@@ -630,6 +632,7 @@ def _market_source(fields: list[str], market_data: dict[str, Any]) -> dict[str, 
         "report_period": None,
         "publish_date": None,
         "unit": "market_data",
+        "audit_ref": "data_sources.market_data",
     }
 
 
@@ -645,6 +648,7 @@ def _report_source(report_name: str, fields: list[str], row: dict[str, Any]) -> 
         "period_prefix": period_prefix,
         "publish_date": _string_or_none(row.get("publish_date")),
         "unit": "元",
+        "audit_ref": f"data_sources.{report_name}",
     }
 
 
@@ -694,3 +698,13 @@ def _period_type_and_prefix(report_period: Any) -> tuple[str | None, str | None]
     if re.fullmatch(r"\d{4}Q[1-4]", period):
         return "quarter", "季度"
     return None, None
+
+
+def _missing_source_audit() -> dict[str, Any]:
+    return {
+        "status": "missing",
+        "analysis_date": None,
+        "generated_at": None,
+        "data_sources": {},
+        "file_paths": {},
+    }

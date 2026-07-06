@@ -98,6 +98,7 @@ def _provenance_lines(metric_provenance: dict[str, Any], keys: list[str]) -> str
         return "口径追溯不可用。"
     lines = [
         f"- 追溯模式：{metric_provenance.get('registry_mode', 'unknown')}，仅做文字说明和现有来源追溯，不参与计算。",
+        _source_audit_summary(metric_provenance.get("source_audit", {})),
     ]
     for key in keys:
         metric = metrics.get(key)
@@ -130,6 +131,35 @@ def _source_summary(sources: list[dict[str, Any]]) -> str:
         if label not in reports:
             reports.append(label)
     return "、".join(reports)
+
+
+def _source_audit_summary(source_audit: dict[str, Any]) -> str:
+    if not source_audit:
+        return "- 来源审计摘要：missing。"
+    data_sources = source_audit.get("data_sources", {})
+    source_names = [name for name, source in data_sources.items() if isinstance(source, dict) and source.get("status") == "ok"]
+    mapped, total = _field_mapping_counts(data_sources)
+    metric_provenance_path = source_audit.get("file_paths", {}).get("processed", {}).get("metric_provenance")
+    path_note = f"；完整审计：{metric_provenance_path}" if metric_provenance_path else ""
+    return f"- 来源审计摘要：{source_audit.get('status', 'missing')}；覆盖数据源：{_join_or_missing(source_names)}；字段映射：{mapped}/{total}{path_note}。"
+
+
+def _field_mapping_counts(data_sources: dict[str, Any]) -> tuple[int, int]:
+    mapped = 0
+    total = 0
+    for source in data_sources.values():
+        if not isinstance(source, dict):
+            continue
+        field_mappings = source.get("field_mappings", {})
+        if not isinstance(field_mappings, dict):
+            continue
+        total += len(field_mappings)
+        mapped += sum(1 for item in field_mappings.values() if isinstance(item, dict) and item.get("status") == "ok")
+    return mapped, total
+
+
+def _join_or_missing(values: list[str]) -> str:
+    return "、".join(values) if values else "missing"
 
 
 def _business_context_lines(business_context: dict[str, Any]) -> str:

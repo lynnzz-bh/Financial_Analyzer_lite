@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 import argparse
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 import re
 import sys
 import pandas as pd
 from config.settings import OUTPUT_DIR, PROCESSED_DIR, PROJECT_VERSION, RAW_DIR
 from src.anti_dependency.anti_dependency_mode import run_anti_dependency_mode
-from src.data_cleaner.financial_cleaner import clean_financial_reports
+from src.data_cleaner.financial_cleaner import build_financial_cleaning_audit, clean_financial_reports
 from src.data_fetcher.akshare_fetcher import fetch_financial_reports, fetch_stock_info
 from src.data_fetcher.announcement_fetcher import fetch_announcements
 from src.data_fetcher.business_fetcher import build_business_context, fetch_business_source_tables
@@ -101,12 +101,15 @@ def main() -> int:
         data_quality_warnings = inspect_raw_fetch_quality(stock_info, market_data, reports)
         for warning in data_quality_warnings:
             logger.warning("数据质量警告：%s | %s | %s", warning["stage"], warning["source"], warning["message"])
-        save_json(stock_info, RAW_DIR / f"{code}_stock_info.json")
-        save_json(market_data, RAW_DIR / f"{code}_market_data.json")
-        save_json(announcements, RAW_DIR / f"{code}_announcements.json")
+        raw_file_paths = {
+            "stock_info": str(save_json(stock_info, RAW_DIR / f"{code}_stock_info.json")),
+            "market_data": str(save_json(market_data, RAW_DIR / f"{code}_market_data.json")),
+            "announcements": str(save_json(announcements, RAW_DIR / f"{code}_announcements.json")),
+        }
+        raw_report_paths: dict[str, str] = {}
         for report_name, df in reports.items():
             if isinstance(df, pd.DataFrame):
-                save_dataframe(df, RAW_DIR / f"{code}_{report_name}.csv")
+                raw_report_paths[report_name] = str(save_dataframe(df, RAW_DIR / f"{code}_{report_name}.csv"))
         data_quality_status = summarize_quality_status(data_quality_warnings)
         if data_quality_status == "fatal":
             save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
@@ -114,6 +117,7 @@ def main() -> int:
             logger.error("数据质量 fatal，已生成失败报告：%s", report_path)
             cleanup_output_if_requested(KEEP_LATEST_OUTPUT_ONLY, code)
             return 0
+        cleaning_audit = build_financial_cleaning_audit(reports)
         cleaned_reports = clean_financial_reports(reports, analysis_date)
         data_quality_warnings.extend(inspect_cleaned_reports_quality(cleaned_reports))
         for warning in data_quality_warnings:
@@ -121,8 +125,10 @@ def main() -> int:
                 logger.warning("数据质量警告：%s | %s | %s", warning["stage"], warning["source"], warning["message"])
         market_data = enrich_market_data_with_report_valuations(market_data, cleaned_reports)
         data_quality_status = summarize_quality_status(data_quality_warnings)
-        save_json(cleaned_reports, PROCESSED_DIR / f"{code}_cleaned_reports.json")
-        save_json(market_data, PROCESSED_DIR / f"{code}_market_data.json")
+        processed_cleaned_reports_path = PROCESSED_DIR / f"{code}_cleaned_reports.json"
+        processed_market_data_path = PROCESSED_DIR / f"{code}_market_data.json"
+        save_json(cleaned_reports, processed_cleaned_reports_path)
+        save_json(market_data, processed_market_data_path)
         if data_quality_status == "fatal":
             save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
             report_path = generate_data_failure_report(_failure_context(code, args.mode, analysis_date, stock_info, market_data, data_quality_warnings, data_quality_status))
@@ -153,11 +159,25 @@ def main() -> int:
             logger.info("Anti-dependency 复盘已生成：%s", record.get("output_path"))
             return 0
         factors = compute_financial_factors(cleaned_reports, market_data)
-        metric_provenance = build_metric_provenance(cleaned_reports, market_data, factors)
+        financial_factors_path = PROCESSED_DIR / f"{code}_financial_factors.json"
+        metric_provenance_path = PROCESSED_DIR / f"{code}_metric_provenance.json"
+        source_audit = _build_source_audit(
+            code=code,
+            analysis_date=analysis_date,
+            cleaning_audit=cleaning_audit,
+            market_data=market_data,
+            raw_file_paths=raw_file_paths,
+            raw_report_paths=raw_report_paths,
+            processed_cleaned_reports_path=processed_cleaned_reports_path,
+            processed_market_data_path=processed_market_data_path,
+            financial_factors_path=financial_factors_path,
+            metric_provenance_path=metric_provenance_path,
+        )
+        metric_provenance = build_metric_provenance(cleaned_reports, market_data, factors, source_audit=source_audit)
         risk_flags = generate_risk_flags(factors, cleaned_reports, announcements)
         financial_score = score_financials(factors)
-        save_json(factors, PROCESSED_DIR / f"{code}_financial_factors.json")
-        save_json(metric_provenance, PROCESSED_DIR / f"{code}_metric_provenance.json")
+        save_json(factors, financial_factors_path)
+        save_json(metric_provenance, metric_provenance_path)
         save_json(risk_flags, PROCESSED_DIR / f"{code}_risk_flags.json")
         save_json(financial_score, PROCESSED_DIR / f"{code}_financial_score.json")
         save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
@@ -210,6 +230,73 @@ def _failure_context(
         "market_data": market_data,
         "data_quality_warnings": data_quality_warnings,
         "data_quality_status": data_quality_status,
+    }
+
+
+def _build_source_audit(
+    code: str,
+    analysis_date: date,
+    cleaning_audit: dict[str, dict[str, object]],
+    market_data: dict,
+    raw_file_paths: dict[str, str],
+    raw_report_paths: dict[str, str],
+    processed_cleaned_reports_path: Path,
+    processed_market_data_path: Path,
+    financial_factors_path: Path,
+    metric_provenance_path: Path,
+) -> dict[str, object]:
+    data_sources: dict[str, object] = {
+        "stock_info": {
+            "status": "ok" if raw_file_paths.get("stock_info") else "missing",
+            "fetcher_function": "akshare_fetcher.fetch_stock_info",
+            "raw_path": raw_file_paths.get("stock_info"),
+            "processed_path": None,
+            "field_mappings": {},
+        },
+        "market_data": {
+            "status": "ok" if market_data else "missing",
+            "fetcher_function": "market_fetcher.fetch_market_data",
+            "raw_path": raw_file_paths.get("market_data"),
+            "processed_path": str(processed_market_data_path),
+            "field_mappings": _market_field_mappings(market_data),
+        },
+    }
+    for report_name in ("income_statement", "balance_sheet", "cash_flow"):
+        report_audit = cleaning_audit.get(report_name, {})
+        data_sources[report_name] = {
+            "status": report_audit.get("status", "missing"),
+            "fetcher_function": "akshare_fetcher.fetch_financial_reports",
+            "raw_path": raw_report_paths.get(report_name),
+            "processed_path": str(processed_cleaned_reports_path),
+            "field_mappings": report_audit.get("field_mappings", {}),
+        }
+    return {
+        "status": "ok" if any(source.get("status") == "ok" for source in data_sources.values() if isinstance(source, dict)) else "missing",
+        "code": code,
+        "analysis_date": analysis_date.isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data_sources": data_sources,
+        "file_paths": {
+            "raw": raw_file_paths | {"financial_reports": raw_report_paths},
+            "processed": {
+                "cleaned_reports": str(processed_cleaned_reports_path),
+                "market_data": str(processed_market_data_path),
+                "financial_factors": str(financial_factors_path),
+                "metric_provenance": str(metric_provenance_path),
+            },
+        },
+    }
+
+
+def _market_field_mappings(market_data: dict) -> dict[str, dict[str, object]]:
+    return {
+        str(field): {
+            "standard_field": str(field),
+            "aliases": [str(field)],
+            "source_field": str(field),
+            "status": "ok" if value is not None else "missing",
+        }
+        for field, value in market_data.items()
     }
 
 

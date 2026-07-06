@@ -50,6 +50,27 @@ def clean_financial_reports(reports: dict[str, pd.DataFrame], analysis_date: dat
     return {name: normalize_financial_dataframe(df, analysis_date).to_dict("records") for name, df in reports.items()}
 
 
+def build_financial_cleaning_audit(reports: dict[str, pd.DataFrame]) -> dict[str, Any]:
+    """Build a read-only trace from standardized fields back to raw columns."""
+    audit: dict[str, Any] = {}
+    for report_name, df in reports.items():
+        if df is None or df.empty:
+            audit[report_name] = {
+                "status": "missing",
+                "field_mappings": {},
+                "date_mappings": {},
+            }
+            continue
+        field_mappings = {target: _field_mapping(df, target, aliases, is_amount=True) for target, aliases in FIELD_ALIASES.items()}
+        date_mappings = {target: _field_mapping(df, target, aliases, is_amount=False) for target, aliases in DATE_ALIASES.items()}
+        audit[report_name] = {
+            "status": "ok" if any(item["status"] == "ok" for item in field_mappings.values()) else "missing",
+            "field_mappings": field_mappings,
+            "date_mappings": date_mappings,
+        }
+    return audit
+
+
 def normalize_financial_dataframe(df: pd.DataFrame, analysis_date: date) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -115,3 +136,21 @@ def _find_column(df: pd.DataFrame, aliases: list[str]) -> str | None:
         if alias.upper() in upper_columns:
             return upper_columns[alias.upper()]
     return None
+
+
+def _field_mapping(df: pd.DataFrame, target: str, aliases: list[str], is_amount: bool) -> dict[str, Any]:
+    source = _find_column(df, aliases)
+    mapping: dict[str, Any] = {
+        "standard_field": target,
+        "aliases": aliases,
+        "source_field": _string_or_none(source),
+        "status": "ok" if source else "missing",
+    }
+    if is_amount:
+        mapping["target_unit"] = "元"
+        mapping["conversion"] = "normalize_money_to_yuan"
+    return mapping
+
+
+def _string_or_none(value: Any) -> str | None:
+    return None if value is None else str(value)

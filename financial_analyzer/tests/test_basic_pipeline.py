@@ -8,7 +8,7 @@ import pytest
 import main as main_module
 from main import cleanup_old_output_files
 from src.anti_dependency import anti_dependency_mode
-from src.data_cleaner.financial_cleaner import normalize_financial_dataframe, normalize_money_to_yuan
+from src.data_cleaner.financial_cleaner import build_financial_cleaning_audit, normalize_financial_dataframe, normalize_money_to_yuan
 from src.data_fetcher import akshare_fetcher
 from src.data_fetcher.akshare_fetcher import to_eastmoney_symbol
 from src.data_fetcher.astock_data_provider import (
@@ -143,6 +143,24 @@ def test_money_normalized_to_yuan() -> None:
     assert normalize_money_to_yuan("300万元") == 3000000
     assert normalize_money_to_yuan(10000) == 10000
     assert normalize_money_to_yuan("-") is None
+
+
+def test_financial_cleaning_audit_maps_raw_aliases_without_changing_cleaning() -> None:
+    audit = build_financial_cleaning_audit({
+        "income_statement": pd.DataFrame([{"TOTAL_OPERATE_INCOME": "1亿元", "REPORT_DATE": "2025-12-31"}]),
+        "balance_sheet": pd.DataFrame([{"TOTAL_ASSETS": 100}]),
+        "cash_flow": pd.DataFrame(),
+    })
+    revenue = audit["income_statement"]["field_mappings"]["营业收入"]
+    missing_cost = audit["income_statement"]["field_mappings"]["营业成本"]
+    assert revenue["aliases"] == ["营业收入", "TOTAL_OPERATE_INCOME", "OPERATE_INCOME"]
+    assert revenue["source_field"] == "TOTAL_OPERATE_INCOME"
+    assert revenue["status"] == "ok"
+    assert revenue["target_unit"] == "元"
+    assert revenue["conversion"] == "normalize_money_to_yuan"
+    assert missing_cost["status"] == "missing"
+    assert audit["income_statement"]["date_mappings"]["report_period"]["source_field"] == "REPORT_DATE"
+    assert audit["cash_flow"]["status"] == "missing"
 
 
 def test_cleaner_filters_future_publish_date() -> None:
@@ -318,6 +336,16 @@ def test_report_displays_metric_provenance_summary(tmp_path, monkeypatch: pytest
         },
         {"股票简称": "贵州茅台", "PE TTM": 20},
         {"毛利率": 0.3, "年度ROE": 0.2, "季度ROE": 0.2, "ROE": 0.2, "自由现金流": 15, "PE TTM": 20},
+        source_audit={
+            "status": "ok",
+            "analysis_date": "2026-06-24",
+            "generated_at": "2026-06-24T00:00:00+00:00",
+            "data_sources": {
+                "income_statement": {"status": "ok", "field_mappings": {"营业收入": {"status": "ok"}}},
+                "market_data": {"status": "ok", "field_mappings": {"PE TTM": {"status": "ok"}}},
+            },
+            "file_paths": {"processed": {"metric_provenance": "data/processed/600519_metric_provenance.json"}},
+        },
     )
     path = report_generator.generate_markdown_report({
         "code": "600519",
@@ -341,6 +369,8 @@ def test_report_displays_metric_provenance_summary(tmp_path, monkeypatch: pytest
     assert "毛利率：毛利 / 营业收入" in content
     assert "年度ROE：年报归母净利润 / 年报股东权益" in content
     assert "季度ROE：最新非年报报告期归母净利润 / 最新非年报报告期股东权益" in content
+    assert "来源审计摘要：ok" in content
+    assert "字段映射：2/2" in content
     assert "毛利率：0.3000（口径：毛利 / 营业收入；来源：年度income_statement）" in content
 
 
@@ -406,9 +436,15 @@ def test_main_normal_run_saves_metric_provenance(tmp_path, monkeypatch: pytest.M
     provenance_path = processed_dir / "600519_metric_provenance.json"
     assert provenance_path.exists()
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
-    assert provenance["schema_version"] == "metric_provenance.v1"
+    assert provenance["schema_version"] == "metric_provenance.v1.1"
     assert provenance["registry_mode"] == "description_only"
+    assert provenance["source_audit"]["status"] == "ok"
+    assert provenance["source_audit"]["data_sources"]["market_data"]["fetcher_function"] == "market_fetcher.fetch_market_data"
+    assert provenance["source_audit"]["data_sources"]["income_statement"]["fetcher_function"] == "akshare_fetcher.fetch_financial_reports"
+    assert provenance["source_audit"]["data_sources"]["income_statement"]["raw_path"].endswith("600519_income_statement.csv")
+    assert provenance["source_audit"]["file_paths"]["processed"]["metric_provenance"].endswith("600519_metric_provenance.json")
     assert provenance["metrics"]["毛利率"]["formula_text"] == "毛利 / 营业收入"
+    assert provenance["metrics"]["毛利率"]["sources"][0]["audit_ref"] == "data_sources.income_statement"
     market_data = json.loads((processed_dir / "600519_market_data.json").read_text(encoding="utf-8"))
     assert market_data["PE 动态"] == 22
     assert market_data["PE TTM"] == pytest.approx(100)
@@ -758,9 +794,10 @@ def test_metric_provenance_schema_snapshot() -> None:
     }
     factors = compute_financial_factors(reports, {"PE TTM": 20, "行情源PEG": 3.47, "PB": 3, "行情源PS": 4, "总市值": 1000})
     provenance = build_metric_provenance(reports, {"PE TTM": 20, "行情源PEG": 3.47, "PB": 3, "行情源PS": 4, "总市值": 1000}, factors)
-    assert sorted(provenance.keys()) == ["calculation_source", "metrics", "registry_mode", "schema_version"]
-    assert provenance["schema_version"] == "metric_provenance.v1"
+    assert sorted(provenance.keys()) == ["calculation_source", "metrics", "registry_mode", "schema_version", "source_audit"]
+    assert provenance["schema_version"] == "metric_provenance.v1.1"
     assert provenance["registry_mode"] == "description_only"
+    assert provenance["source_audit"]["status"] == "missing"
     gross_margin = provenance["metrics"]["毛利率"]
     assert sorted(gross_margin.keys()) == ["caliber_note", "category", "formula_text", "is_ttm", "period_note", "sources", "status", "unit", "value"]
     assert gross_margin["formula_text"] == "毛利 / 营业收入"
@@ -776,6 +813,7 @@ def test_metric_provenance_schema_snapshot() -> None:
             "period_prefix": "年度",
             "publish_date": "2026-04-01",
             "unit": "元",
+            "audit_ref": "data_sources.income_statement",
         }
     ]
     pe_ttm = provenance["metrics"]["PE TTM"]
@@ -788,6 +826,7 @@ def test_metric_provenance_schema_snapshot() -> None:
             "report_period": None,
             "publish_date": None,
             "unit": "market_data",
+            "audit_ref": "data_sources.market_data",
         },
         {
             "report": "income_statement",
@@ -798,6 +837,7 @@ def test_metric_provenance_schema_snapshot() -> None:
             "period_prefix": "年度",
             "publish_date": "2026-04-01",
             "unit": "元",
+            "audit_ref": "data_sources.income_statement",
         },
     ]
     assert "当年已披露的归母净利润倍增为全年预测利润" in provenance["metrics"]["PE 动态"]["caliber_note"]

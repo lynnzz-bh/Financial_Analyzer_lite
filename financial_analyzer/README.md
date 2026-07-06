@@ -1,4 +1,4 @@
-# Financial Analyzer 0.4.1
+# Financial Analyzer 0.5.2
 
 A 股单股财务分析工作流系统。输入股票代码、分析日期和分析目标后，系统抓取 AKShare 数据、清洗财报、计算指标、生成风险红旗和评分，并输出 Markdown 简报。
 
@@ -37,6 +37,13 @@ python main.py --code 600519 --date 2026-06-24 --mode "买入前检查" --anti-d
 - `data/raw/`：原始抓取数据。
 - `data/processed/`：清洗数据、指标、评分、风险红旗和 LLM 中间结果。
 - `data/output/`：最终 Markdown 简报。
+
+## 指标来源审计
+
+- `data/processed/{code}_metric_provenance.json` 会保存 `source_audit`，用于追溯指标来源审计信息。
+- 审计信息包括标准字段到原始字段别名的映射、抓取函数、raw/processed 文件路径、分析日期和生成时间。
+- 审计信息只用于复核，不参与指标计算、评分或风险红旗判断；缺失时标记为 `missing`，不阻断报告。
+- `data/output` 中历史版本生成的旧报告不会自动重写，后续人工重新运行程序时会自然更新。
 
 ## 数据源补充
 
