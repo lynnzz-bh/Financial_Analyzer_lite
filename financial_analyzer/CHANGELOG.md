@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- 新增 `src/factors/quarterly_factors.py`，将财报数据源默认累计口径的 `Q1/H1/Q3/A` 报表值拆分为独立单季度 QTR 结果。
+- 新增 `split_ytd_reports_to_quarters()`，输出 `status`、`quarters` 和 `warnings`，其中 QTR 指标键统一使用 `_QTR` 后缀，避免与原始累计字段混淆。
+- Q1 直接取当期值，Q2 使用 H1-Q1，Q3 使用 Q3-H1，Q4 使用 A-Q3；输入顺序不作为质量问题，模块内部按报告期排序。
+- 仅对无法解析报告期、重复报告期、缺少依赖期记录 warning；所有 status 统一为 `ok/warning/unavailable`。
+- 本版本只新增独立季度拆分基础模块和测试，不接入 `compute_financial_factors()`，不修改 registry，不生成 trends JSON，不改报告展示；README 待 0.6.4 财务趋势全套能力完成后统一更新。
+
 ## 0.5.3
 
 - registry 新增机器可读计算契约元信息，覆盖 `operation`、`numerator_fields`、`denominator_fields`、`helper_name` 和 `expected_factor_key`。
