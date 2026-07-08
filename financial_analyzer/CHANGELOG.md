@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1
+
+- 将 0.6.0 的 `split_ytd_reports_to_quarters()` 接入 `compute_financial_factors()`，输出核心单季度字段：`单季度营业收入`、`单季度归母净利润`、`单季度扣非净利润`、`单季度经营现金流`。
+- `单季度营收同比` 和 `单季度扣非净利润同比` 改为基于独立单季度拆分值计算，不再沿用累计同报告期同比；`营收同比`、`归母净利润同比`、`扣非归母净利润同比` 的累计口径保持不变。
+- 新增 `单季度同比信号` 辅助字段；去年同季度基数为负且本期转正时标记 `turnaround`，基数为负且仍亏损时区分 `loss_expanded` / `loss_narrowed`，基数为 0 或缺失时标记 `base_zero` / `missing`。
+- 负数或 0 基数下不输出误导性同比百分比，改由信号表达扭亏为盈、亏损扩大、亏损收窄等本质状态；该信号不参与评分、风险红旗或指标缺失统计。
+- 新增 0.6.1 临时 registry allow-list，并标注 `TODO(0.6.2)`，用于在单季度原始字段正式补入 registry 契约前维持 registry/factors 一致性测试。
+- 本版本不改 Markdown 报告展示，不生成 financial trends JSON，不改变评分权重，不改 CLI 主流程；registry 完整契约、趋势 JSON 和报告趋势表分别留到 0.6.2-0.6.4。
+
 ## 0.6.0
 
 - Anti-dependency Mode 调整为同次运行同时输出正常财务分析简报和 `_anti_dependency_review.md` 对比复盘，不再因为学习模式跳过普通报告。

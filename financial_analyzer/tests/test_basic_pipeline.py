@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import date
+import inspect
 import json
 import sys
 import pandas as pd
@@ -20,11 +21,13 @@ from src.data_fetcher.astock_data_provider import (
 )
 from src.data_fetcher.business_fetcher import build_business_context
 from src.data_fetcher.market_fetcher import _map_market_row
+from src.factors import metric_registry as metric_registry_module
 from src.factors.financial_factors import compute_financial_factors, enrich_market_data_with_report_valuations
 from src.factors.metric_registry import (
     ALLOWED_OPERATIONS,
     META_FACTOR_KEYS,
     METRIC_REGISTRY,
+    PENDING_061_FACTOR_KEYS,
     build_metric_provenance,
     registered_metric_names,
     shadow_validate_registry_against_factors,
@@ -752,6 +755,19 @@ def test_metric_registry_matches_financial_factor_fields() -> None:
     factor_names = set(factors) - META_FACTOR_KEYS
     assert factor_names <= registered_metric_names()
     assert registered_metric_names() <= factor_names
+    assert PENDING_061_FACTOR_KEYS <= set(factors)
+
+
+def test_061_pending_single_quarter_allow_list_has_todo_comment() -> None:
+    source = inspect.getsource(metric_registry_module)
+    assert "TODO(0.6.2): remove this allow-list after single-quarter factors are added to metric_registry contracts" in source
+    assert PENDING_061_FACTOR_KEYS == {
+        "单季度营业收入",
+        "单季度归母净利润",
+        "单季度扣非净利润",
+        "单季度经营现金流",
+        "单季度同比信号",
+    }
 
 
 def test_metric_registry_contract_metadata_is_complete() -> None:
@@ -1059,6 +1075,120 @@ def test_yoy_uses_same_report_period_last_year() -> None:
     assert factors["扣非归母净利润同比"] == pytest.approx(1 / 3)
     assert factors["合同负债同比"] == pytest.approx(0.5)
     assert factors["在建工程同比"] == pytest.approx(1.0)
+
+
+def test_single_quarter_fields_and_yoy_use_independent_quarter_values() -> None:
+    reports = {
+        "income_statement": [
+            {"report_period": "2024Q1", "营业收入": 100, "归母净利润": 10, "扣非归母净利润": 8},
+            {"report_period": "2024H1", "营业收入": 240, "归母净利润": 25, "扣非归母净利润": 18},
+            {"report_period": "2024Q3", "营业收入": 390, "归母净利润": 40, "扣非归母净利润": 26},
+            {"report_period": "2025Q1", "营业收入": 120, "归母净利润": 12, "扣非归母净利润": 10},
+            {"report_period": "2025H1", "营业收入": 310, "归母净利润": 31, "扣非归母净利润": 28},
+            {"report_period": "2025Q3", "营业收入": 550, "归母净利润": 61, "扣非归母净利润": 58},
+        ],
+        "balance_sheet": [],
+        "cash_flow": [
+            {"report_period": "2024Q1", "经营活动现金流净额": 5},
+            {"report_period": "2024H1", "经营活动现金流净额": 9},
+            {"report_period": "2024Q3", "经营活动现金流净额": 14},
+            {"report_period": "2025Q1", "经营活动现金流净额": 6},
+            {"report_period": "2025H1", "经营活动现金流净额": 16},
+            {"report_period": "2025Q3", "经营活动现金流净额": 31},
+        ],
+    }
+
+    factors = compute_financial_factors(reports, {})
+
+    assert factors["单季度营业收入"] == pytest.approx(240)
+    assert factors["单季度归母净利润"] == pytest.approx(30)
+    assert factors["单季度扣非净利润"] == pytest.approx(30)
+    assert factors["单季度经营现金流"] == pytest.approx(15)
+    assert factors["营收同比"] == pytest.approx(550 / 390 - 1)
+    assert factors["单季度营收同比"] == pytest.approx(240 / 150 - 1)
+    assert factors["单季度营收同比"] != pytest.approx(factors["营收同比"])
+    assert factors["单季度扣非净利润同比"] == pytest.approx(30 / 8 - 1)
+    assert factors["单季度同比信号"]["单季度营收同比"]["status"] == "normal"
+    assert factors["单季度同比信号"]["单季度营收同比"]["current_period"] == "2025Q3"
+    assert factors["单季度同比信号"]["单季度营收同比"]["base_period"] == "2024Q3"
+
+
+def test_single_quarter_yoy_negative_base_turnaround_signal() -> None:
+    reports = _single_quarter_signal_reports(base_deducted_q3=-10, current_deducted_q3=5)
+    factors = compute_financial_factors(reports, {})
+    signal = factors["单季度同比信号"]["单季度扣非净利润同比"]
+
+    assert factors["单季度扣非净利润"] == pytest.approx(5)
+    assert factors["单季度扣非净利润同比"] is None
+    assert signal["status"] == "turnaround"
+    assert signal["base_value"] == pytest.approx(-10)
+    assert signal["current_value"] == pytest.approx(5)
+    assert "扭亏为盈" in signal["message"]
+
+
+@pytest.mark.parametrize(
+    ("current_deducted_q3", "expected_status"),
+    [(-15, "loss_expanded"), (-5, "loss_narrowed")],
+)
+def test_single_quarter_yoy_negative_base_loss_signals(current_deducted_q3: float, expected_status: str) -> None:
+    reports = _single_quarter_signal_reports(base_deducted_q3=-10, current_deducted_q3=current_deducted_q3)
+    factors = compute_financial_factors(reports, {})
+
+    assert factors["单季度扣非净利润同比"] is None
+    assert factors["单季度同比信号"]["单季度扣非净利润同比"]["status"] == expected_status
+
+
+def test_single_quarter_yoy_zero_base_signal() -> None:
+    reports = _single_quarter_signal_reports(base_deducted_q3=0, current_deducted_q3=5)
+    factors = compute_financial_factors(reports, {})
+
+    assert factors["单季度扣非净利润同比"] is None
+    assert factors["单季度同比信号"]["单季度扣非净利润同比"]["status"] == "base_zero"
+
+
+def test_single_quarter_yoy_missing_base_signal() -> None:
+    reports = {
+        "income_statement": [
+            {"report_period": "2025Q1", "营业收入": 110, "扣非归母净利润": 0},
+            {"report_period": "2025H1", "营业收入": 230, "扣非归母净利润": 0},
+            {"report_period": "2025Q3", "营业收入": 360, "扣非归母净利润": 5},
+        ],
+        "balance_sheet": [],
+        "cash_flow": [],
+    }
+    factors = compute_financial_factors(reports, {})
+
+    assert factors["单季度扣非净利润同比"] is None
+    assert factors["单季度同比信号"]["单季度扣非净利润同比"]["status"] == "missing"
+
+
+def test_single_quarter_signal_and_transition_fields_do_not_affect_counts_score_or_risks() -> None:
+    reports = _single_quarter_signal_reports(base_deducted_q3=-10, current_deducted_q3=5)
+    factors = compute_financial_factors(reports, {})
+    countable_keys = set(factors) - META_FACTOR_KEYS
+
+    assert factors["指标总数量"] == len(countable_keys)
+    assert factors["指标缺失数量"] == sum(1 for key in countable_keys if factors[key] is None)
+
+    mutated = deepcopy(factors)
+    mutated["单季度同比信号"] = {"单季度扣非净利润同比": {"status": "changed"}}
+    assert score_financials(mutated) == score_financials(factors)
+    assert generate_risk_flags(mutated, reports, []) == generate_risk_flags(factors, reports, [])
+
+
+def _single_quarter_signal_reports(base_deducted_q3: float, current_deducted_q3: float) -> dict[str, list[dict[str, float | str]]]:
+    return {
+        "income_statement": [
+            {"report_period": "2024Q1", "营业收入": 100, "归母净利润": 0, "扣非归母净利润": 0},
+            {"report_period": "2024H1", "营业收入": 200, "归母净利润": 0, "扣非归母净利润": 0},
+            {"report_period": "2024Q3", "营业收入": 300, "归母净利润": base_deducted_q3, "扣非归母净利润": base_deducted_q3},
+            {"report_period": "2025Q1", "营业收入": 110, "归母净利润": 0, "扣非归母净利润": 0},
+            {"report_period": "2025H1", "营业收入": 230, "归母净利润": 0, "扣非归母净利润": 0},
+            {"report_period": "2025Q3", "营业收入": 360, "归母净利润": current_deducted_q3, "扣非归母净利润": current_deducted_q3},
+        ],
+        "balance_sheet": [],
+        "cash_flow": [],
+    }
 
 
 def test_valuation_uses_ttm_denominators() -> None:

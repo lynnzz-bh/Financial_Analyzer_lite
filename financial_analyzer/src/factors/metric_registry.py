@@ -31,7 +31,16 @@ class MetricDefinition(TypedDict):
 SCHEMA_VERSION = "metric_provenance.v1.1"
 REGISTRY_MODE = "description_only"
 CALCULATION_SOURCE = "src.factors.financial_factors.compute_financial_factors"
-META_FACTOR_KEYS = {"指标缺失数量", "指标总数量"}
+FACTOR_META_KEYS = {"指标缺失数量", "指标总数量"}
+# TODO(0.6.2): remove this allow-list after single-quarter factors are added to metric_registry contracts.
+PENDING_061_FACTOR_KEYS = {
+    "单季度营业收入",
+    "单季度归母净利润",
+    "单季度扣非净利润",
+    "单季度经营现金流",
+    "单季度同比信号",
+}
+META_FACTOR_KEYS = FACTOR_META_KEYS | PENDING_061_FACTOR_KEYS
 ALLOWED_OPERATIONS = {"direct_market", "simple_ratio", "yoy", "ttm", "composite_helper"}
 
 
@@ -158,23 +167,23 @@ METRIC_REGISTRY: dict[str, MetricDefinition] = {
     },
     "单季度营收同比": {
         "category": "成长",
-        "formula_text": "当前版本沿用营收同比",
-        "caliber_note": "0.5.0 只追溯现有结果，不修正单季度口径；严格单季拆分留到 0.6.0。",
+        "formula_text": "本期单季度营业收入 / 去年同季度单季度营业收入 - 1",
+        "caliber_note": "使用季度拆分后的独立单季度营业收入；去年同季度基数小于等于 0 或缺失时不输出百分比，改由单季度同比信号说明状态。",
         "source_reports": ["income_statement"],
         "source_fields": {"income_statement": ["营业收入"]},
         "unit": "ratio",
         "is_ttm": False,
-        "period_note": "当前版本沿用最新报告期与去年同类报告期。",
+        "period_note": "最新单季度与去年同季度。",
     },
     "单季度扣非净利润同比": {
         "category": "成长",
-        "formula_text": "当前版本沿用扣非归母净利润同比",
-        "caliber_note": "0.5.0 只追溯现有结果，不修正单季度口径；严格单季拆分留到 0.6.0。",
+        "formula_text": "本期单季度扣非归母净利润 / 去年同季度单季度扣非归母净利润 - 1",
+        "caliber_note": "使用季度拆分后的独立单季度扣非归母净利润；去年同季度基数小于等于 0 或缺失时不输出百分比，改由单季度同比信号说明扭亏、亏损扩大或亏损收窄。",
         "source_reports": ["income_statement"],
         "source_fields": {"income_statement": ["扣非归母净利润"]},
         "unit": "ratio",
         "is_ttm": False,
-        "period_note": "当前版本沿用最新报告期与去年同类报告期。",
+        "period_note": "最新单季度与去年同季度。",
     },
     "近四季度滚动营收": {
         "category": "成长",
@@ -486,12 +495,14 @@ _YOY_CONTRACT_FIELDS = {
     "营收同比": {"income_statement": ["营业收入"]},
     "归母净利润同比": {"income_statement": ["归母净利润"]},
     "扣非归母净利润同比": {"income_statement": ["扣非归母净利润"]},
-    "单季度营收同比": {"income_statement": ["营业收入"]},
-    "单季度扣非净利润同比": {"income_statement": ["扣非归母净利润"]},
     "合同负债同比": {"balance_sheet": ["合同负债"]},
     "在建工程同比": {"balance_sheet": ["在建工程"]},
     "应收账款同比": {"balance_sheet": ["应收账款"]},
     "存货同比": {"balance_sheet": ["存货"]},
+}
+_SINGLE_QUARTER_YOY_CONTRACT_FIELDS = {
+    "单季度营收同比": {"income_statement": ["营业收入"]},
+    "单季度扣非净利润同比": {"income_statement": ["扣非归母净利润"]},
 }
 _TTM_CONTRACT_FIELDS = {
     "近四季度滚动营收": {"income_statement": ["营业收入"]},
@@ -521,6 +532,13 @@ def _attach_contract_metadata(registry: dict[str, MetricDefinition]) -> None:
                 "numerator_fields": _YOY_CONTRACT_FIELDS[metric_name],
                 "denominator_fields": _YOY_CONTRACT_FIELDS[metric_name],
                 "helper_name": "_yoy",
+            }
+        elif metric_name in _SINGLE_QUARTER_YOY_CONTRACT_FIELDS:
+            contract = {
+                "operation": "composite_helper",
+                "numerator_fields": _SINGLE_QUARTER_YOY_CONTRACT_FIELDS[metric_name],
+                "denominator_fields": _SINGLE_QUARTER_YOY_CONTRACT_FIELDS[metric_name],
+                "helper_name": "_single_quarter_yoy",
             }
         elif metric_name in _TTM_CONTRACT_FIELDS:
             contract = {

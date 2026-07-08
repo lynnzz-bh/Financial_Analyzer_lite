@@ -5,17 +5,35 @@ import re
 
 import pandas as pd
 
+from src.factors.quarterly_factors import split_ytd_reports_to_quarters
+
+QUARTERLY_INCOME_FIELDS = ["营业收入", "归母净利润", "扣非归母净利润"]
+QUARTERLY_CASH_FIELDS = ["经营活动现金流净额"]
+QUARTERLY_TRANSITION_FIELDS = {
+    "单季度营业收入",
+    "单季度归母净利润",
+    "单季度扣非净利润",
+    "单季度经营现金流",
+    "单季度同比信号",
+}
+
 
 def compute_financial_factors(cleaned_reports: dict[str, list[dict[str, Any]]], market_data: dict[str, Any]) -> dict[str, Any]:
     income_rows = cleaned_reports.get("income_statement", [])
     balance_rows = cleaned_reports.get("balance_sheet", [])
     cash_rows = cleaned_reports.get("cash_flow", [])
     latest_income, latest_balance, latest_cash = _latest_row(income_rows), _latest_row(balance_rows), _latest_row(cash_rows)
+    income_quarters = split_ytd_reports_to_quarters(income_rows, QUARTERLY_INCOME_FIELDS, report_name="income_statement")
+    cash_quarters = split_ytd_reports_to_quarters(cash_rows, QUARTERLY_CASH_FIELDS, report_name="cash_flow")
+    latest_income_quarter = _latest_quarter_result(income_quarters, income_rows)
+    latest_cash_quarter = _latest_quarter_result(cash_quarters, cash_rows)
+    single_quarter_revenue_yoy, single_quarter_revenue_signal = _single_quarter_yoy(income_quarters, latest_income_quarter, "营业收入", "单季度营收同比")
+    single_quarter_deducted_profit_yoy, single_quarter_deducted_profit_signal = _single_quarter_yoy(income_quarters, latest_income_quarter, "扣非归母净利润", "单季度扣非净利润同比")
     annual_income, annual_balance = _latest_annual_row(income_rows), _latest_annual_row(balance_rows)
     quarterly_income, quarterly_balance = _latest_quarterly_row(income_rows), _latest_quarterly_row(balance_rows)
     annual_roe = _safe_div(annual_income.get("归母净利润"), annual_balance.get("股东权益"))
     quarterly_roe = _safe_div(quarterly_income.get("归母净利润"), quarterly_balance.get("股东权益"))
-    single_quarter_annualized_roe = _single_quarter_annualized_roe(income_rows, balance_rows)
+    single_quarter_annualized_roe = _single_quarter_annualized_roe(income_rows, balance_rows, income_quarters)
     ttm_revenue = _ttm(income_rows, "营业收入")
     report_based_valuation = compute_report_based_valuation(cleaned_reports, market_data)
     factors = {
@@ -31,8 +49,16 @@ def compute_financial_factors(cleaned_reports: dict[str, list[dict[str, Any]]], 
         "营收同比": _yoy(income_rows, "营业收入"),
         "归母净利润同比": _yoy(income_rows, "归母净利润"),
         "扣非归母净利润同比": _yoy(income_rows, "扣非归母净利润"),
-        "单季度营收同比": _yoy(income_rows, "营业收入"),
-        "单季度扣非净利润同比": _yoy(income_rows, "扣非归母净利润"),
+        "单季度营业收入": _quarter_value(latest_income_quarter, "营业收入"),
+        "单季度归母净利润": _quarter_value(latest_income_quarter, "归母净利润"),
+        "单季度扣非净利润": _quarter_value(latest_income_quarter, "扣非归母净利润"),
+        "单季度经营现金流": _quarter_value(latest_cash_quarter, "经营活动现金流净额"),
+        "单季度营收同比": single_quarter_revenue_yoy,
+        "单季度扣非净利润同比": single_quarter_deducted_profit_yoy,
+        "单季度同比信号": {
+            "单季度营收同比": single_quarter_revenue_signal,
+            "单季度扣非净利润同比": single_quarter_deducted_profit_signal,
+        },
         "近四季度滚动营收": _ttm(income_rows, "营业收入"),
         "近四季度滚动扣非净利润": _ttm(income_rows, "扣非归母净利润"),
         "合同负债同比": _yoy(balance_rows, "合同负债"),
@@ -65,8 +91,9 @@ def compute_financial_factors(cleaned_reports: dict[str, list[dict[str, Any]]], 
         "市值/扣非净利润": _safe_div(_to_float(market_data.get("总市值")), _ttm(income_rows, "扣非归母净利润")),
         "市值/经营现金流": _safe_div(_to_float(market_data.get("总市值")), _ttm(cash_rows, "经营活动现金流净额")),
     }
-    factors["指标缺失数量"] = sum(1 for value in factors.values() if value is None)
-    factors["指标总数量"] = len(factors) - 2
+    countable_values = [value for key, value in factors.items() if key not in QUARTERLY_TRANSITION_FIELDS]
+    factors["指标缺失数量"] = sum(1 for value in countable_values if value is None)
+    factors["指标总数量"] = len(countable_values)
     return factors
 
 
@@ -160,29 +187,112 @@ def _latest_quarterly_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return _latest_row(rows)
 
 
-def _single_quarter_annualized_roe(income_rows: list[dict[str, Any]], balance_rows: list[dict[str, Any]]) -> float | None:
-    latest_income = _latest_row(income_rows)
+def _single_quarter_annualized_roe(
+    income_rows: list[dict[str, Any]],
+    balance_rows: list[dict[str, Any]],
+    income_quarters: dict[str, Any] | None = None,
+) -> float | None:
     latest_balance = _latest_row(balance_rows)
-    single_quarter_profit = _single_quarter_value(income_rows, "归母净利润")
+    income_quarters = income_quarters or split_ytd_reports_to_quarters(income_rows, QUARTERLY_INCOME_FIELDS, report_name="income_statement")
+    single_quarter_profit = _quarter_value(_latest_quarter_result(income_quarters, income_rows), "归母净利润")
     previous_balance = _previous_balance_for_single_quarter(balance_rows, latest_balance)
     average_equity = _average_values(latest_balance.get("股东权益"), previous_balance.get("股东权益"))
     return _safe_div(_multiply(single_quarter_profit, 4), average_equity)
 
 
-def _single_quarter_value(rows: list[dict[str, Any]], field: str) -> float | None:
-    latest_row = _latest_row(rows)
-    period = _parse_period(latest_row.get("report_period"))
-    current = _to_float(latest_row.get(field))
-    if period is None or current is None:
+def _latest_quarter_result(quarter_split: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    latest_period = _normalized_source_period(_latest_row(rows).get("report_period"))
+    if latest_period is None:
+        return {}
+    for quarter in reversed(quarter_split.get("quarters", [])):
+        if quarter.get("source_period") == latest_period:
+            return quarter
+    return {}
+
+
+def _normalized_source_period(value: Any) -> str | None:
+    period = _parse_period(value)
+    if period is None:
         return None
     year, period_code = period
-    previous_period = {"Q1": None, "H1": "Q1", "Q3": "H1", "A": "Q3"}[period_code]
-    if previous_period is None:
-        return current
-    previous = _to_float(_row_for_period(rows, f"{year}{previous_period}").get(field))
-    if previous is None:
+    return f"{year}{period_code}"
+
+
+def _quarter_value(quarter: dict[str, Any], field: str) -> float | None:
+    values = quarter.get("values", {}) if isinstance(quarter, dict) else {}
+    return _to_float(values.get(_quarter_field_name(field)))
+
+
+def _quarter_field_name(field: str) -> str:
+    return f"{field}_QTR"
+
+
+def _single_quarter_yoy(
+    quarter_split: dict[str, Any],
+    latest_quarter: dict[str, Any],
+    field: str,
+    metric_name: str,
+) -> tuple[float | None, dict[str, Any]]:
+    current_period = latest_quarter.get("qtr_period")
+    base_period = _same_quarter_last_year_period(current_period)
+    current = _quarter_value(latest_quarter, field)
+    base_quarter = _quarter_by_qtr_period(quarter_split).get(base_period)
+    base = _quarter_value(base_quarter or {}, field)
+    if current is None or base is None:
+        return None, _single_quarter_signal(metric_name, field, "missing", current_period, base_period, current, base)
+    if base > 0:
+        return current / base - 1, _single_quarter_signal(metric_name, field, "normal", current_period, base_period, current, base)
+    if base == 0:
+        return None, _single_quarter_signal(metric_name, field, "base_zero", current_period, base_period, current, base)
+    if current > 0:
+        return None, _single_quarter_signal(metric_name, field, "turnaround", current_period, base_period, current, base)
+    if current < base:
+        return None, _single_quarter_signal(metric_name, field, "loss_expanded", current_period, base_period, current, base)
+    return None, _single_quarter_signal(metric_name, field, "loss_narrowed", current_period, base_period, current, base)
+
+
+def _same_quarter_last_year_period(qtr_period: Any) -> str | None:
+    match = re.fullmatch(r"(\d{4})Q([1-4])", str(qtr_period or ""))
+    if not match:
         return None
-    return current - previous
+    return f"{int(match.group(1)) - 1}Q{match.group(2)}"
+
+
+def _quarter_by_qtr_period(quarter_split: dict[str, Any]) -> dict[str | None, dict[str, Any]]:
+    return {quarter.get("qtr_period"): quarter for quarter in quarter_split.get("quarters", [])}
+
+
+def _single_quarter_signal(
+    metric_name: str,
+    field: str,
+    status: str,
+    current_period: Any,
+    base_period: Any,
+    current: float | None,
+    base: float | None,
+) -> dict[str, Any]:
+    return {
+        "metric": metric_name,
+        "field": field,
+        "status": status,
+        "current_period": current_period,
+        "base_period": base_period,
+        "current_value": current,
+        "base_value": base,
+        "message": _single_quarter_signal_message(status),
+    }
+
+
+def _single_quarter_signal_message(status: str) -> str:
+    messages = {
+        "normal": "去年同季度基数为正，单季度同比可按常规百分比计算。",
+        "turnaround": "去年同季度为负，本期转正；本质是扭亏为盈，不输出同比百分比。",
+        "loss_expanded": "去年同季度为负，本期亏损扩大；不输出同比百分比。",
+        "loss_narrowed": "去年同季度为负，本期亏损收窄或持平；不输出同比百分比。",
+        "base_zero": "去年同季度基数为 0，无法计算有意义的同比百分比。",
+        "missing": "当前单季度值或去年同季度单季度值缺失。",
+    }
+    return messages.get(status, "单季度同比状态未知。")
 
 
 def _previous_balance_for_single_quarter(rows: list[dict[str, Any]], latest_row: dict[str, Any]) -> dict[str, Any]:
