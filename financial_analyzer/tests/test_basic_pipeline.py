@@ -469,6 +469,60 @@ def test_main_normal_run_saves_metric_provenance(tmp_path, monkeypatch: pytest.M
     assert "指标口径与来源追溯" in reports[0].read_text(encoding="utf-8")
 
 
+def test_main_anti_dependency_run_generates_normal_report_and_review(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw_dir = tmp_path / "raw"
+    processed_dir = tmp_path / "processed"
+    output_dir = tmp_path / "output"
+    events: list[str] = []
+    monkeypatch.setattr(main_module, "RAW_DIR", raw_dir)
+    monkeypatch.setattr(main_module, "PROCESSED_DIR", processed_dir)
+    monkeypatch.setattr(main_module, "OUTPUT_DIR", output_dir)
+    monkeypatch.setattr(report_generator, "OUTPUT_DIR", output_dir)
+    monkeypatch.setattr(anti_dependency_mode, "OUTPUT_DIR", output_dir)
+    monkeypatch.setattr(anti_dependency_mode, "PROCESSED_DIR", processed_dir)
+    monkeypatch.setattr(main_module, "cleanup_output_if_requested", lambda enabled, code: None)
+    monkeypatch.setattr(sys, "argv", ["main.py", "--code", "600519", "--date", "2026-06-24", "--mode", "买入前检查", "--anti-dependency"])
+    monkeypatch.setattr(main_module, "fetch_stock_info", lambda code: {"股票代码": code, "股票简称": "贵州茅台"})
+    monkeypatch.setattr(main_module, "fetch_market_data", lambda code, analysis_date: {"股票简称": "贵州茅台", "最新收盘价": 100, "总市值": 1000, "PE 动态": 22, "PE TTM": None, "行情源PEG": 3.47, "PB 行情源": 4, "PB": None, "行情源PS": 9})
+    monkeypatch.setattr(main_module, "fetch_financial_reports", lambda code: {"income_statement": pd.DataFrame([{"x": 1}]), "balance_sheet": pd.DataFrame([{"x": 1}]), "cash_flow": pd.DataFrame([{"x": 1}])})
+    monkeypatch.setattr(main_module, "fetch_announcements", lambda code, analysis_date: [])
+    monkeypatch.setattr(main_module, "clean_financial_reports", lambda reports, analysis_date: {
+        "income_statement": [{"report_period": "2025A", "publish_date": "2026-04-01", "毛利": 30, "营业收入": 100, "归母净利润": 10, "扣非归母净利润": 9}],
+        "balance_sheet": [{"report_period": "2025A", "publish_date": "2026-04-01", "股东权益": 50, "总资产": 100, "总负债": 40}],
+        "cash_flow": [{"report_period": "2025A", "publish_date": "2026-04-01", "经营活动现金流净额": 20, "购建固定资产、无形资产和其他长期资产支付的现金": 5}],
+    })
+    monkeypatch.setattr(main_module, "fetch_business_source_tables", lambda code, analysis_date: {})
+    monkeypatch.setattr(main_module, "build_business_context", lambda source_tables: {})
+
+    def fake_start_anti_dependency_mode(**kwargs) -> dict[str, str]:
+        events.append("human_judgment")
+        return {"raw_data_snapshot": "# snapshot", "human_judgment": "人工先判"}
+
+    def fake_run_llm_pipeline(context: dict) -> dict:
+        assert events == ["human_judgment"]
+        events.append("normal_llm")
+        return {"deepseek": {"status": "ok", "content": "deepseek"}, "qwen": {"status": "ok", "content": "qwen"}}
+
+    def fake_qwen(prompt: str) -> dict[str, str]:
+        assert events == ["human_judgment", "normal_llm"]
+        events.append("anti_review")
+        return {"status": "ok", "content": "anti review"}
+
+    monkeypatch.setattr(main_module, "start_anti_dependency_mode", fake_start_anti_dependency_mode)
+    monkeypatch.setattr(main_module, "run_llm_pipeline", fake_run_llm_pipeline)
+    monkeypatch.setattr(anti_dependency_mode, "call_qwen", fake_qwen)
+
+    assert main_module.main() == 0
+    assert events == ["human_judgment", "normal_llm", "anti_review"]
+    normal_reports = list(output_dir.glob("*财务分析简报.md"))
+    review_reports = list(output_dir.glob("*_anti_dependency_review.md"))
+    assert len(normal_reports) == 1
+    assert len(review_reports) == 1
+    saved_record = json.loads((processed_dir / "600519_anti_dependency_record.json").read_text(encoding="utf-8"))
+    assert saved_record["normal_report_path"].endswith("财务分析简报.md")
+    assert saved_record["output_path"].endswith("600519_2026-06-24_anti_dependency_review.md")
+
+
 def test_cleanup_old_output_files_keeps_latest_date(tmp_path) -> None:
     old_report = tmp_path / "600519_贵州茅台_2026-06-24_财务分析简报.md"
     latest_report = tmp_path / "600519_贵州茅台_2026-06-26_财务分析简报.md"
@@ -611,6 +665,7 @@ def test_anti_dependency_mode_records_human_judgment_before_qwen(tmp_path, monke
         },
         announcements=[],
         data_quality_warnings=[],
+        normal_report_path=tmp_path / "600519_贵州茅台_2026-06-24_财务分析简报.md",
         input_func=lambda prompt: next(inputs),
         output_func=outputs.append,
     )
@@ -623,6 +678,34 @@ def test_anti_dependency_mode_records_human_judgment_before_qwen(tmp_path, monke
     assert (tmp_path / "600519_2026-06-24_anti_dependency_review.md").exists()
     saved_record = json.loads(record_path.read_text(encoding="utf-8"))
     assert saved_record["output_path"].endswith("600519_2026-06-24_anti_dependency_review.md")
+    assert saved_record["normal_report_path"].endswith("600519_贵州茅台_2026-06-24_财务分析简报.md")
+
+
+def test_anti_dependency_raw_snapshot_uses_markdown_tables_and_human_units() -> None:
+    snapshot = anti_dependency_mode.build_raw_data_snapshot(
+        stock_info={"股票代码": "600519", "股票简称": "贵州茅台"},
+        market_data={"股票代码": "600519", "股票简称": "贵州茅台", "总市值": 1200000000.0, "PE TTM": 20},
+        reports={
+            "income_statement": pd.DataFrame([
+                {"REPORT_DATE": "2025-12-31", "NOTICE_DATE": "2026-04-01", "TOTAL_OPERATE_INCOME": 1000000000, "TOTAL_OPERATE_COST": None, "PARENT_NETPROFIT": 100000000},
+                {"REPORT_DATE": "2026-03-31", "NOTICE_DATE": "2026-04-25", "TOTAL_OPERATE_INCOME": 1200000000.0, "TOTAL_OPERATE_COST": 800000000, "PARENT_NETPROFIT": 120000000},
+            ]),
+            "balance_sheet": pd.DataFrame([
+                {"REPORT_DATE": "2026-03-31", "NOTICE_DATE": "2026-04-25", "TOTAL_ASSETS": 3000000000, "TOTAL_LIABILITIES": 1000000000, "PARENT_EQUITY": 2000000000},
+            ]),
+            "cash_flow": pd.DataFrame([
+                {"REPORT_DATE": "2026-03-31", "NOTICE_DATE": "2026-04-25", "NETCASH_OPERATE": 80000000, "SALES_SERVICES": 1100000000},
+            ]),
+        },
+    )
+    assert "| 报告期 | 披露日 | 营业收入 | 营业成本 | 归母净利润 |" in snapshot
+    assert "| 报告期 | 披露日 | 总资产 | 总负债 | 归母权益 |" in snapshot
+    assert "| 报告期 | 披露日 | 经营现金流净额 | 销售收现 |" in snapshot
+    assert snapshot.index("2026-03-31") < snapshot.index("2025-12-31")
+    assert "12.00亿元" in snapshot
+    assert "missing" in snapshot
+    assert "e+09" not in snapshot
+    assert "1.2e" not in snapshot
 
 
 def test_factor_score_and_risk_rules() -> None:

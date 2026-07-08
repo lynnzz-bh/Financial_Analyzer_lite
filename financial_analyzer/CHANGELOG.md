@@ -2,6 +2,10 @@
 
 ## 0.6.0
 
+- Anti-dependency Mode 调整为同次运行同时输出正常财务分析简报和 `_anti_dependency_review.md` 对比复盘，不再因为学习模式跳过普通报告。
+- Anti-dependency 对比复盘记录新增普通报告路径，便于从复盘文件回跳到同次生成的完整财务分析简报。
+- Anti-dependency 原始三张表改为 Markdown 表格展示，按最近报告期倒序排列，使用中文表头和亿元单位，避免 `1.2e+09` 等科学计数法降低可读性。
+- 补充 Anti-dependency 双文件输出、先人工判断后普通 LLM/复盘、原始表格格式化的回归测试。
 - 新增 `src/factors/quarterly_factors.py`，将财报数据源默认累计口径的 `Q1/H1/Q3/A` 报表值拆分为独立单季度 QTR 结果。
 - 新增 `split_ytd_reports_to_quarters()`，输出 `status`、`quarters` 和 `warnings`，其中 QTR 指标键统一使用 `_QTR` 后缀，避免与原始累计字段混淆。
 - Q1 直接取当期值，Q2 使用 H1-Q1，Q3 使用 Q3-H1，Q4 使用 A-Q3；输入顺序不作为质量问题，模块内部按报告期排序。

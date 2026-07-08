@@ -8,7 +8,7 @@ import re
 import sys
 import pandas as pd
 from config.settings import OUTPUT_DIR, PROCESSED_DIR, PROJECT_VERSION, RAW_DIR
-from src.anti_dependency.anti_dependency_mode import run_anti_dependency_mode
+from src.anti_dependency.anti_dependency_mode import generate_anti_dependency_review, start_anti_dependency_mode
 from src.data_cleaner.financial_cleaner import build_financial_cleaning_audit, clean_financial_reports
 from src.data_fetcher.akshare_fetcher import fetch_financial_reports, fetch_stock_info
 from src.data_fetcher.announcement_fetcher import fetch_announcements
@@ -143,21 +143,13 @@ def main() -> int:
         data_quality_warnings.extend(inspect_business_context_quality(business_context))
         save_json(business_context, PROCESSED_DIR / f"{code}_business_context.json")
         data_quality_status = summarize_quality_status(data_quality_warnings)
+        anti_dependency_session = None
         if args.anti_dependency:
-            save_json(data_quality_warnings, PROCESSED_DIR / f"{code}_data_quality_warnings.json")
-            record = run_anti_dependency_mode(
-                code=code,
-                mode=args.mode,
-                analysis_date=analysis_date,
+            anti_dependency_session = start_anti_dependency_mode(
                 stock_info=stock_info,
                 market_data=raw_market_data,
                 reports=reports,
-                announcements=announcements,
-                data_quality_warnings=data_quality_warnings,
             )
-            logger.info("Anti-dependency 记录已生成：%s", PROCESSED_DIR / f"{code}_anti_dependency_record.json")
-            logger.info("Anti-dependency 复盘已生成：%s", record.get("output_path"))
-            return 0
         factors = compute_financial_factors(cleaned_reports, market_data)
         financial_factors_path = PROCESSED_DIR / f"{code}_financial_factors.json"
         metric_provenance_path = PROCESSED_DIR / f"{code}_metric_provenance.json"
@@ -201,6 +193,18 @@ def main() -> int:
         save_json(context["llm_results"], PROCESSED_DIR / f"{code}_llm_results.json")
         report_path = generate_markdown_report(context)
         logger.info("报告已生成：%s", report_path)
+        if anti_dependency_session:
+            record = generate_anti_dependency_review(
+                code=code,
+                mode=args.mode,
+                analysis_date=analysis_date,
+                raw_data_snapshot=anti_dependency_session["raw_data_snapshot"],
+                human_judgment=anti_dependency_session["human_judgment"],
+                context=context,
+                normal_report_path=report_path,
+            )
+            logger.info("Anti-dependency 记录已生成：%s", PROCESSED_DIR / f"{code}_anti_dependency_record.json")
+            logger.info("Anti-dependency 复盘已生成：%s", record.get("output_path"))
         cleanup_output_if_requested(KEEP_LATEST_OUTPUT_ONLY, code)
         logger.info("核心结果：综合评分 %s/100，可信度 %s，风险红旗 %s 条", financial_score.get("total_score"), financial_score.get("score_confidence"), len(risk_flags))
         return 0
